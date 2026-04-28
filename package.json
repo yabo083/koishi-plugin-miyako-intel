@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-prts-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Koishi plugin: search and view PRTS Wiki content with optional screenshot and ChatLuna tool integration.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
