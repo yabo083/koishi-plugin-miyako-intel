@@ -1,0 +1,57 @@
+{
+  "name": "koishi-plugin-prts-search",
+  "version": "0.1.0",
+  "description": "Koishi plugin: search and view PRTS Wiki content with optional screenshot and ChatLuna tool integration.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "koishi",
+    "koishi-plugin",
+    "arknights",
+    "prts",
+    "wiki",
+    "chatluna"
+  ],
+  "author": "yabo083",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "pub": "npm run build && npm publish --access public"
+  },
+  "peerDependencies": {
+    "koishi": "^4.18.0"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.79",
+    "html-entities": "^2.6.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "typescript": "^5.8.3"
+  },
+  "koishi": {
+    "description": {
+      "zh": "PRTS Wiki 搜索插件：支持关键词搜索、序号查看详情、可选整页截图与 ChatLuna 工具调用。"
+    },
+    "service": {
+      "optional": [
+        "puppeteer",
+        "chatluna"
+      ]
+    }
+  }
+}
