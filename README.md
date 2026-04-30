@@ -48,13 +48,13 @@ plugins:
     scheduledPush:
       enabled: false
       channels:
-        - sandbox:group-1
-        - sandbox:group-2
+        - onebot:11111111
       cron: 10 4 * * *
 ```
 
 cron 使用 5 段格式：`分钟 小时 日期 月份 星期`，并按 `timezone` 生效。  
 例如 `5 4 * * *` 表示每天 04:05 刷新缓存，`10 4 * * *` 表示每天 04:10 推送，`0 8 * * 1` 表示每周一 08:00。
+OneBot / NapCat 群推送目标通常写成 `onebot:群号`，例如 `onebot:11111111`。
 
 ## 从旧包迁移
 

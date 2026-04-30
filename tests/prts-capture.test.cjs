@@ -108,6 +108,21 @@ test('calculates PRTS cache day by 04:00 Asia/Shanghai boundary', () => {
   assert.equal(getPrtsDayKey(new Date('2026-04-28T20:00:00.000Z'), 'Asia/Shanghai', 4), '2026-04-29')
 })
 
+test('config guide stays compact and shows onebot channel example', () => {
+  const { Config, usage } = loadPlugin()
+  const json = JSON.stringify(Config)
+
+  assert.doesNotMatch(json, /##/)
+  assert.doesNotMatch(json, /###/)
+  assert.doesNotMatch(json, /<p><strong>PRTS 今日情报/)
+  assert.match(usage, /<p>/)
+  assert.match(usage, /<ul>/)
+  assert.match(usage, /<code>scheduledPush\.channels<\/code>/)
+  assert.match(usage, /onebot:11111111/)
+  assert.match(usage, /prts d/)
+  assert.match(usage, /分钟 小时 日期 月份 星期/)
+})
+
 test('registers only the daily Koishi dot command', async () => {
   const { apply } = loadPlugin()
   const calls = []

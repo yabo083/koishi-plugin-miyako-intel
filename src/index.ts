@@ -10,32 +10,23 @@ export type { Config as ArknightsIntelConfig } from './types'
 export const name = 'miyako-intel'
 export const inject = { optional: ['puppeteer'] as const }
 
-const usage = [
-  '## Miyako 游戏情报',
-  '',
-  '当前提供 PRTS Wiki 首页「今日信息」整合图。',
-  '',
-  '### 指令',
-  '',
-  '- `prts d`：发送今日信息截图，优先读取当天缓存。',
-  '- `prts r [d|all]`：强制刷新今日信息缓存。',
-  '- `prts h`：查看命令帮助。',
-  '',
-  '### 定时',
-  '',
-  '定时项使用 5 段 cron：`分钟 小时 日期 月份 星期`，并按下方 `timezone` 解释。',
-  '例如 `10 4 * * *` 表示每天 04:10 执行；`*/30 * * * *` 表示每 30 分钟执行一次。',
-  '后台推送只会发送到白名单频道，频道格式建议写成 `platform:id`。',
-].join('\n')
+export const usage = `
+<p><strong>PRTS 今日情报</strong></p>
+<ul>
+  <li><code>prts d</code> 发送首页「今日信息」整合图。</li>
+  <li><code>prts r d</code> 强制刷新今日缓存。</li>
+  <li><code>prts h</code> 查看命令帮助。</li>
+</ul>
+<p><strong>定时</strong>：<code>refreshCron</code> 是补缓存时间，<code>scheduledPush.cron</code> 是推送时间；格式为 <code>分钟 小时 日期 月份 星期</code>。</p>
+<p><strong>推送目标</strong>：<code>scheduledPush.channels</code> 填 Koishi 频道 ID。OneBot / NapCat 群示例：<code>onebot:11111111</code>。机器人必须已加入该群，且对应适配器在线。</p>
+`
 
 const cronDescription = [
-  '5 段 cron 表达式：`分钟 小时 日期 月份 星期`，按 `timezone` 生效。',
-  '例：`5 4 * * *` = 每天 04:05；`0 8 * * 1` = 每周一 08:00。',
-  '支持 `*`、`,`、`-`、`/`，星期可用 `0` 或 `7` 表示周日。',
+  'cron 格式：`分钟 小时 日期 月份 星期`，按 `timezone` 生效。',
+  '例：`5 4 * * *` = 每天 04:05；`*/30 * * * *` = 每 30 分钟一次。',
 ].join('\n')
 
 export const Config: Schema<RuntimeConfig> = Schema.intersect([
-  Schema.object({}).description(usage),
   Schema.object({
     baseUrl: Schema.string().default('https://prts.wiki').description('PRTS Wiki 根地址。'),
     homepagePath: Schema.string().default('/w/%E9%A6%96%E9%A1%B5').description('PRTS 首页路径。'),
@@ -61,8 +52,8 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
   Schema.object({
     scheduledPush: Schema.object({
       enabled: Schema.boolean().default(false).description('是否启用后台定时推送。'),
-      channels: Schema.array(String).default([]).description('允许接收定时推送的频道列表，建议使用 platform:id。'),
-      cron: Schema.string().default('10 4 * * *').description(`推送触发时间。\n${cronDescription}\n当前默认值表示每天 04:10 推送一次。`),
+      channels: Schema.array(String).default([]).description('推送目标频道。OneBot/NapCat 群示例：onebot:11111111；多群点“添加项目”。'),
+      cron: Schema.string().default('10 4 * * *').description(`推送触发时间。\n${cronDescription}\n默认表示每天 04:10 推送。`),
     }).description('定时推送设置'),
   }).description('定时任务'),
 ])
