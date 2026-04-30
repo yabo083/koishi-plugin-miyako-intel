@@ -3,3 +3,5 @@ dist
 *.tsbuildinfo
 npm-debug.log*
 .worktrees/
+.claude/
+debug-*.png

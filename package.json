@@ -1,7 +1,7 @@
 {
-  "name": "koishi-plugin-prts-search",
-  "version": "0.1.1",
-  "description": "Koishi plugin: search and view PRTS Wiki content with optional screenshot and ChatLuna tool integration.",
+  "name": "koishi-plugin-arknights-intel",
+  "version": "1.0.0",
+  "description": "Koishi plugin: capture PRTS Wiki daily Arknights intel cards with daily cache and scheduled push.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -19,9 +19,10 @@
     "arknights",
     "prts",
     "wiki",
-    "chatluna"
+    "daily",
+    "intel"
   ],
-  "author": "yabo083",
+  "author": "miyako",
   "homepage": "https://github.com/yabo083/koishi-plugin-prts-search",
   "repository": {
     "type": "git",
@@ -36,16 +37,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.cjs",
     "prepublishOnly": "npm run build",
     "pub": "npm run build && npm publish --access public"
   },
   "peerDependencies": {
     "koishi": "^4.18.0"
-  },
-  "dependencies": {
-    "@langchain/core": "^0.3.79",
-    "html-entities": "^2.6.0",
-    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
@@ -53,12 +50,11 @@
   },
   "koishi": {
     "description": {
-      "zh": "PRTS Wiki 搜索插件：支持关键词搜索、序号查看详情、可选整页截图与 ChatLuna 工具调用。"
+      "zh": "明日方舟情报截图插件：每日缓存并推送 PRTS Wiki 今日信息整合图。"
     },
     "service": {
       "optional": [
-        "puppeteer",
-        "chatluna"
+        "puppeteer"
       ]
     }
   }

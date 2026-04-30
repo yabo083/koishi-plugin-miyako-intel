@@ -1,69 +1,71 @@
-# koishi-plugin-prts-search
+# koishi-plugin-arknights-intel
 
-Koishi 插件：在聊天中搜索 PRTS Wiki，按编号查看详情，并支持可选整页截图与 ChatLuna 工具调用。
+明日方舟情报截图插件。当前版本聚焦 PRTS Wiki 首页「今日信息」整合图：将今日状态、核心动态、亮点干员与近期新增内容整理成适合 QQ 群查看的黑蓝终端风格图片，并按明日方舟日切缓存。
+
+## 定位
+
+这个插件不再承担通用 PRTS 资料搜索职责。PRTS Wiki 的页面排版、媒体资料与站内结构本身有很高的信息密度，普通资料查询更适合用户直接打开 PRTS 查看；插件保留低成本、有推送价值的 `prts.d`，作为资料搜集与资讯日报体系中的 PRTS 今日信息入口。
+
+后续资料搜索能力预留给更合适的数据源或专用 API，例如 warfarin.wiki 未来的官方搜索 API。
 
 ## 功能
 
-- `prts <关键词>`：搜索 PRTS Wiki，返回编号列表。
-- `prts.view <编号>`：查看最近一次搜索中的指定结果。
-- `prts.view <编号> -s`：查看详情并尝试截图。
-- `prts.shot <页面标题>`：直接截图指定页面。
-- 搜索后可直接回复数字（例如 `1`）查看详情；回复 `C` 取消当前会话上下文。
-- 可选注册 ChatLuna 工具（默认工具名 `prts_search`）。
+- `prts d` / `prts.d` / `prts -d`：发送 PRTS 今日信息整合图。
+- `prts r [d|all]` / `prts.r [d|all]` / `prts -r [d|all]`：无视缓存强制刷新今日信息；默认 `all` 等同于刷新 `d`。
+- `prts h` / `prts.h`：查看命令帮助。
+- 支持后台定时刷新与定时推送，频道白名单用于控制推送群聊。
+- 刷新失败时可回退到上一份可用缓存。
 
-## 安装
+图片底部会标注：信息源 `prts.wiki`，生成者 `arknights-intel`，开发者 `miyako`。
 
-```bash
-npm i koishi-plugin-prts-search
-```
+## 截图策略
 
-如果需要截图，请确保 Koishi 已启用 `koishi-plugin-puppeteer`。
+- 访问 `https://prts.wiki/w/%E9%A6%96%E9%A1%B5`。
+- 提取并整合 `今日信息 / 亮点干员 / 近期新增` 三个区块。
+- 自动展开白名单区块内的折叠内容，突出采购凭证等临近刷新提示。
+- 由 Koishi `puppeteer` 服务在浏览器中完成 DOM 重排与截图，不依赖 `sharp`。
 
-## 基础配置示例
+## 配置示例
 
 ```yaml
 plugins:
-  prts-search:
+  arknights-intel:
     baseUrl: https://prts.wiki
-    maxResults: 5
-    contextTtlSeconds: 300
-    summaryLength: 1000
-    defaultPermission: all
-    enableRateLimit: true
-    rateLimitPerMinute: 20
-    enableScreenshot: true
-    defaultViewport: desktop
-    enableChatLunaTool: true
-    chatLunaToolName: prts_search
+    homepagePath: /w/%E9%A6%96%E9%A1%B5
+    cacheDirectory: data/arknights-intel/cache
+    timezone: Asia/Shanghai
+    dailyRefreshHour: 4
+    scheduledRefreshMinute: 5
+    navigationTimeoutMs: 45000
+    renderDelayMs: 1000
+    viewportWidth: 1366
+    viewportHeight: 900
+    staleFallback: true
+    scheduledPush:
+      enabled: false
+      channels:
+        - sandbox:group-1
+        - sandbox:group-2
+      hour: 4
+      minute: 10
 ```
 
-## 本地开发
+## 迁移提示
+
+- npm 包名从 `koishi-plugin-prts-search` 调整为 `koishi-plugin-arknights-intel`。
+- Koishi 配置键从 `prts-search` 调整为 `arknights-intel`。
+- 默认缓存目录从 `data/prts-search/cache` 调整为 `data/arknights-intel/cache`。如需沿用旧缓存，可手动迁移目录或在配置中继续指定旧路径。
+- `prts.e`、`prts -e`、`pushEvents` 与 `eventMaxHeight` 已移除。
+
+## 运行要求
+
+- 需要启用 Koishi `puppeteer` 服务。
+- Linux / Docker 环境建议安装中文字体，例如 Noto Sans CJK，避免截图出现方框字。
+
+## 开发
 
 ```bash
 npm install
 npm run build
-```
-
-## 发布（含 OIDC Trusted Publishing）
-
-此仓库包含 `.github/workflows/publish.yml`，当推送 `v*` tag 时会：
-
-1. 安装依赖并构建
-2. `npm publish --access public --provenance`
-3. 自动创建 GitHub Release
-
-在 npm 后台需要提前完成一次 Trusted Publishing 绑定：
-
-1. 打开 npm 包设置 `Package Settings -> Publishing access`
-2. 添加 GitHub Actions 可信发布来源：
-   - Owner: 你的 GitHub 用户名
-   - Repository: 此插件仓库名
-   - Workflow: `publish.yml`
-   - Environment: 留空（或按需设置）
-
-完成后推送 tag 即可自动发布：
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
+npm test
 ```
