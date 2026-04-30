@@ -1,7 +1,7 @@
 {
-  "name": "koishi-plugin-prts-search",
+  "name": "koishi-plugin-miyako-intel",
   "version": "1.0.0",
-  "description": "Koishi plugin: capture PRTS Wiki daily Arknights intel cards with daily cache and scheduled push.",
+  "description": "Koishi plugin: Miyako-branded game intel cards with daily cache and scheduled push.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -19,17 +19,18 @@
     "arknights",
     "prts",
     "wiki",
+    "miyako",
     "daily",
     "intel"
   ],
   "author": "miyako",
-  "homepage": "https://github.com/yabo083/koishi-plugin-prts-search",
+  "homepage": "https://github.com/yabo083/koishi-plugin-miyako-intel",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yabo083/koishi-plugin-prts-search.git"
+    "url": "git+https://github.com/yabo083/koishi-plugin-miyako-intel.git"
   },
   "bugs": {
-    "url": "https://github.com/yabo083/koishi-plugin-prts-search/issues"
+    "url": "https://github.com/yabo083/koishi-plugin-miyako-intel/issues"
   },
   "license": "MIT",
   "engines": {
@@ -50,7 +51,7 @@
   },
   "koishi": {
     "description": {
-      "zh": "明日方舟情报截图插件：每日缓存并推送 PRTS Wiki 今日信息整合图。"
+      "zh": "Miyako 游戏情报插件：每日缓存并推送资料源情报整合图。"
     },
     "service": {
       "optional": [

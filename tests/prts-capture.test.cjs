@@ -79,7 +79,7 @@ function createMockContext(options = {}) {
 const defaultConfig = {
   baseUrl: 'https://prts.wiki',
   homepagePath: '/w/%E9%A6%96%E9%A1%B5',
-  cacheDirectory: 'data/arknights-intel/cache',
+  cacheDirectory: 'data/miyako-intel/cache',
   timezone: 'Asia/Shanghai',
   dailyRefreshHour: 4,
   scheduledRefreshMinute: 5,
@@ -168,7 +168,7 @@ test('refresh command defaults to refreshing daily capture only', async () => {
 test('uses previous cache when fresh daily capture fails', async () => {
   const { apply, getPrtsDayKey } = loadPlugin()
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prts-stale-'))
-  const staleDir = path.join(baseDir, 'data/arknights-intel/cache', '2026-04-28')
+  const staleDir = path.join(baseDir, 'data/miyako-intel/cache', '2026-04-28')
   fs.mkdirSync(staleDir, { recursive: true })
   fs.writeFileSync(path.join(staleDir, 'daily.png'), Buffer.from('old-image'))
 

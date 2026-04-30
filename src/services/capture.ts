@@ -894,7 +894,7 @@ export class PrtsCaptureService {
 
         const credits = document.createElement('footer')
         credits.className = 'prts-credit-bar'
-        for (const text of ['信息源：prts.wiki', '生成者：arknights-intel', '开发者：miyako']) {
+        for (const text of ['信息源：prts.wiki', '生成者：miyako-intel', '开发者：miyako']) {
           const item = document.createElement('span')
           item.textContent = text
           credits.append(item)

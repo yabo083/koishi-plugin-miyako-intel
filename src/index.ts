@@ -6,11 +6,11 @@ import { PrtsCaptureService } from './services/capture'
 export { getPrtsDayKey }
 export type { Config as ArknightsIntelConfig } from './types'
 
-export const name = 'arknights-intel'
+export const name = 'miyako-intel'
 export const inject = { optional: ['puppeteer'] as const }
 
 const usage = [
-  '明日方舟情报截图命令：',
+  'Miyako 游戏情报命令：',
   '- prts d：发送 PRTS 首页「今日信息」整合图。',
   '- prts r [d|all]：无视缓存强制刷新今日信息。',
   '- prts h：查看帮助。',
@@ -22,7 +22,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
   Schema.object({
     baseUrl: Schema.string().default('https://prts.wiki').description('PRTS Wiki 根地址。'),
     homepagePath: Schema.string().default('/w/%E9%A6%96%E9%A1%B5').description('PRTS 首页路径。'),
-    cacheDirectory: Schema.string().default('data/arknights-intel/cache').description('截图缓存目录，相对 Koishi baseDir。'),
+    cacheDirectory: Schema.string().default('data/miyako-intel/cache').description('截图缓存目录，相对 Koishi baseDir。'),
     timezone: Schema.string().default('Asia/Shanghai').description('缓存日切所使用的时区。'),
     dailyRefreshHour: Schema.number().min(0).max(23).default(4).description('每日缓存刷新小时，默认按明日方舟 04:00 日切。'),
     scheduledRefreshMinute: Schema.number().min(0).max(59).default(5).description('定时刷新分钟，默认 04:05 后执行。'),
@@ -77,7 +77,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     }
   }
 
-  const root = ctx.command('prts', '明日方舟情报截图服务')
+  const root = ctx.command('prts', 'Miyako 游戏情报截图服务')
     .option('daily', '-d')
     .option('refresh', '-r [target:string]')
     .action(async ({ session, options }) => {
@@ -102,7 +102,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     return runBackgroundJobs()
   }, 10 * 60 * 1000)
 
-  logger.info('明日方舟情报截图插件已加载。')
+  logger.info('Miyako 游戏情报插件已加载。')
 
   async function refreshTarget(session: any, rawTarget: string) {
     const target = rawTarget.toLowerCase().replace(/[：:，,。.!！]+$/g, '')
@@ -153,7 +153,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
 
 function buildHelp() {
   return [
-    '明日方舟情报截图命令',
+    'Miyako 游戏情报命令',
     'prts d：PRTS 今日信息整合图',
     'prts r [d|all]：强制刷新今日信息缓存，默认 all',
     'prts h：查看帮助',
@@ -165,7 +165,7 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
   return {
     baseUrl: config.baseUrl || 'https://prts.wiki',
     homepagePath: config.homepagePath || '/w/%E9%A6%96%E9%A1%B5',
-    cacheDirectory: config.cacheDirectory || 'data/arknights-intel/cache',
+    cacheDirectory: config.cacheDirectory || 'data/miyako-intel/cache',
     timezone: config.timezone || 'Asia/Shanghai',
     dailyRefreshHour: config.dailyRefreshHour ?? 4,
     scheduledRefreshMinute: config.scheduledRefreshMinute ?? 5,
