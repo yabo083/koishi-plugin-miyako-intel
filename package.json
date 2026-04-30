@@ -1,5 +1,5 @@
 {
-  "name": "koishi-plugin-arknights-intel",
+  "name": "koishi-plugin-prts-search",
   "version": "1.0.0",
   "description": "Koishi plugin: capture PRTS Wiki daily Arknights intel cards with daily cache and scheduled push.",
   "main": "dist/index.js",

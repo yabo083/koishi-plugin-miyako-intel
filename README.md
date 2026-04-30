@@ -1,4 +1,4 @@
-# koishi-plugin-arknights-intel
+# koishi-plugin-prts-search
 
 明日方舟情报截图插件。当前版本聚焦 PRTS Wiki 首页「今日信息」整合图：将今日状态、核心动态、亮点干员与近期新增内容整理成适合 QQ 群查看的黑蓝终端风格图片，并按明日方舟日切缓存。
 
@@ -52,8 +52,8 @@ plugins:
 
 ## 迁移提示
 
-- npm 包名从 `koishi-plugin-prts-search` 调整为 `koishi-plugin-arknights-intel`。
-- Koishi 配置键从 `prts-search` 调整为 `arknights-intel`。
+- npm 包仍沿用 `koishi-plugin-prts-search`，以复用现有 npm trusted publishing 绑定。
+- Koishi 运行时插件名从 `prts-search` 调整为 `arknights-intel`。
 - 默认缓存目录从 `data/prts-search/cache` 调整为 `data/arknights-intel/cache`。如需沿用旧缓存，可手动迁移目录或在配置中继续指定旧路径。
 - `prts.e`、`prts -e`、`pushEvents` 与 `eventMaxHeight` 已移除。
 
