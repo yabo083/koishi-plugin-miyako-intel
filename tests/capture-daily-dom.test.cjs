@@ -13,6 +13,8 @@ const {
   shouldDiscardOriginalRedcertNode,
   buildDailyTerminalStyles,
   getCountdownUrgencyClass,
+  shouldRemoveFromCoreColumn,
+  shouldRemoveFromStatusColumn,
 } = require('../dist/services/capture.js')
 
 test('parseRefreshHours parses day+hour+minute text', () => {
@@ -121,4 +123,29 @@ test('buildDailyTerminalStyles uses Rhodes terminal visual system', () => {
   assert.doesNotMatch(css, /\.prts-card::after/)
   assert.match(css, /\.prts-credit-bar/)
   assert.doesNotMatch(css, /#7d1020/)
+})
+
+test('today split keeps resource collection even when it mentions purchase certificates', () => {
+  const resourceLine = '物资筹备分区：作战记录 / 采购凭证 / 龙门币'
+  const chipLine = '芯片搜索分区：医疗&重装 / 先锋&辅助 职业芯片(组)'
+  const voucherLine = '资质凭证采购将于今晚刷新。'
+
+  assert.equal(shouldRemoveFromStatusColumn(resourceLine), false)
+  assert.equal(shouldRemoveFromStatusColumn(chipLine), false)
+  assert.equal(shouldRemoveFromStatusColumn(voucherLine), false)
+
+  assert.equal(shouldRemoveFromCoreColumn(resourceLine), true)
+  assert.equal(shouldRemoveFromCoreColumn(chipLine), true)
+  assert.equal(shouldRemoveFromCoreColumn(voucherLine), true)
+})
+
+test('today split sends combat dynamics to core column only', () => {
+  assert.equal(shouldRemoveFromStatusColumn('全局剿灭模拟开放中，24天12小时后结束。'), true)
+  assert.equal(shouldRemoveFromStatusColumn('本轮『常驻中坚寻访』将于5小时后结束。'), true)
+  assert.equal(shouldRemoveFromStatusColumn('采购凭证区信物即将刷新 18小时+'), true)
+  assert.equal(shouldRemoveFromStatusColumn('采购凭证区的信物库存将于18小时后刷新。'), true)
+
+  assert.equal(shouldRemoveFromCoreColumn('全局剿灭模拟开放中，24天12小时后结束。'), false)
+  assert.equal(shouldRemoveFromCoreColumn('本轮『常驻中坚寻访』将于5小时后结束。'), false)
+  assert.equal(shouldRemoveFromCoreColumn('采购凭证区信物即将刷新 18小时+'), false)
 })

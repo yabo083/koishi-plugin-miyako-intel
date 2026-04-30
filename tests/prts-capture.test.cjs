@@ -54,6 +54,7 @@ function createMockContext(options = {}) {
       return {
         info(message) { loggerLines.push(['info', message]) },
         warn(message) { loggerLines.push(['warn', message]) },
+        debug(message) { loggerLines.push(['debug', message]) },
         error(message) { loggerLines.push(['error', message]) },
       }
     },
@@ -83,6 +84,8 @@ const defaultConfig = {
   timezone: 'Asia/Shanghai',
   dailyRefreshHour: 4,
   scheduledRefreshMinute: 5,
+  refreshCron: '5 4 * * *',
+  logLevel: 'info',
   navigationTimeoutMs: 45000,
   renderDelayMs: 0,
   viewportWidth: 1366,
@@ -93,6 +96,7 @@ const defaultConfig = {
     channels: [],
     hour: 4,
     minute: 10,
+    cron: '10 4 * * *',
   },
   now: '2026-04-29T02:00:00.000+08:00',
 }
@@ -198,8 +202,7 @@ test('scheduled push only broadcasts to allowed channels when enabled', async ()
     scheduledPush: {
       enabled: true,
       channels: ['sandbox:group-1', 'sandbox:group-2'],
-      hour: 5,
-      minute: 10,
+      cron: '12 5 * * *',
     },
   }
 
@@ -211,6 +214,54 @@ test('scheduled push only broadcasts to allowed channels when enabled', async ()
   assert.equal(broadcastCalls.length, 1)
   assert.deepEqual(broadcastCalls[0].channels, ['sandbox:group-1', 'sandbox:group-2'])
   assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
+})
+
+test('scheduled push waits for cron expression minute', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, intervals, broadcastCalls } = createMockContext({ puppeteer })
+
+  const config = {
+    ...defaultConfig,
+    now: '2026-04-29T05:11:00.000+08:00',
+    scheduledPush: {
+      enabled: true,
+      channels: ['sandbox:group-1'],
+      cron: '12 5 * * *',
+    },
+  }
+
+  apply(ctx, config)
+  await intervals[0].callback()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(broadcastCalls.length, 0)
+  assert.equal(calls.filter((item) => item === 'captureDaily').length, 0)
+})
+
+test('silent log level suppresses routine scheduled push logs', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, intervals, loggerLines } = createMockContext({ puppeteer })
+
+  const config = {
+    ...defaultConfig,
+    logLevel: 'silent',
+    now: '2026-04-29T05:12:00.000+08:00',
+    scheduledPush: {
+      enabled: true,
+      channels: ['sandbox:group-1'],
+      cron: '12 5 * * *',
+    },
+  }
+
+  apply(ctx, config)
+  await intervals[0].callback()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(loggerLines.length, 0)
 })
 
 function createFailingPuppeteer() {

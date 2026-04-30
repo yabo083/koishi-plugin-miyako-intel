@@ -2,6 +2,7 @@ import { Context, Schema } from 'koishi'
 import { Config as RuntimeConfig } from './types'
 import { DailyImageCache, getPrtsDayKey, getZonedParts } from './services/cache'
 import { PrtsCaptureService } from './services/capture'
+import { matchesCronExpression } from './services/cron'
 
 export { getPrtsDayKey }
 export type { Config as ArknightsIntelConfig } from './types'
@@ -10,11 +11,27 @@ export const name = 'miyako-intel'
 export const inject = { optional: ['puppeteer'] as const }
 
 const usage = [
-  'Miyako 游戏情报命令：',
-  '- prts d：发送 PRTS 首页「今日信息」整合图。',
-  '- prts r [d|all]：无视缓存强制刷新今日信息。',
-  '- prts h：查看帮助。',
-  '- 支持后台定时推送（开关 + 分群白名单）。',
+  '## Miyako 游戏情报',
+  '',
+  '当前提供 PRTS Wiki 首页「今日信息」整合图。',
+  '',
+  '### 指令',
+  '',
+  '- `prts d`：发送今日信息截图，优先读取当天缓存。',
+  '- `prts r [d|all]`：强制刷新今日信息缓存。',
+  '- `prts h`：查看命令帮助。',
+  '',
+  '### 定时',
+  '',
+  '定时项使用 5 段 cron：`分钟 小时 日期 月份 星期`，并按下方 `timezone` 解释。',
+  '例如 `10 4 * * *` 表示每天 04:10 执行；`*/30 * * * *` 表示每 30 分钟执行一次。',
+  '后台推送只会发送到白名单频道，频道格式建议写成 `platform:id`。',
+].join('\n')
+
+const cronDescription = [
+  '5 段 cron 表达式：`分钟 小时 日期 月份 星期`，按 `timezone` 生效。',
+  '例：`5 4 * * *` = 每天 04:05；`0 8 * * 1` = 每周一 08:00。',
+  '支持 `*`、`,`、`-`、`/`，星期可用 `0` 或 `7` 表示周日。',
 ].join('\n')
 
 export const Config: Schema<RuntimeConfig> = Schema.intersect([
@@ -24,8 +41,14 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
     homepagePath: Schema.string().default('/w/%E9%A6%96%E9%A1%B5').description('PRTS 首页路径。'),
     cacheDirectory: Schema.string().default('data/miyako-intel/cache').description('截图缓存目录，相对 Koishi baseDir。'),
     timezone: Schema.string().default('Asia/Shanghai').description('缓存日切所使用的时区。'),
-    dailyRefreshHour: Schema.number().min(0).max(23).default(4).description('每日缓存刷新小时，默认按明日方舟 04:00 日切。'),
-    scheduledRefreshMinute: Schema.number().min(0).max(59).default(5).description('定时刷新分钟，默认 04:05 后执行。'),
+    dailyRefreshHour: Schema.number().min(0).max(23).default(4).description('每日缓存归属的日切小时，默认按明日方舟 04:00 日切。'),
+    refreshCron: Schema.string().default('5 4 * * *').description(`后台补缓存触发时间。\n${cronDescription}`),
+    logLevel: Schema.union([
+      Schema.const('silent').description('静默：不输出插件运行日志。'),
+      Schema.const('warn').description('警告：只输出失败和异常。'),
+      Schema.const('info').description('信息：输出加载、定时刷新、定时推送结果。'),
+      Schema.const('debug').description('调试：额外输出定时任务跳过原因。'),
+    ]).role('radio').default('info').description('插件日志等级。'),
   }).description('缓存与站点'),
   Schema.object({
     navigationTimeoutMs: Schema.number().min(5000).max(120000).default(45000).description('页面导航和关键元素等待超时。'),
@@ -39,8 +62,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
     scheduledPush: Schema.object({
       enabled: Schema.boolean().default(false).description('是否启用后台定时推送。'),
       channels: Schema.array(String).default([]).description('允许接收定时推送的频道列表，建议使用 platform:id。'),
-      hour: Schema.number().min(0).max(23).default(4).description('定时推送小时（按 timezone）。'),
-      minute: Schema.number().min(0).max(59).default(10).description('定时推送分钟（按 timezone）。'),
+      cron: Schema.string().default('10 4 * * *').description(`推送触发时间。\n${cronDescription}\n当前默认值表示每天 04:10 推送一次。`),
     }).description('定时推送设置'),
   }).description('定时任务'),
 ])
@@ -54,8 +76,8 @@ declare module 'koishi' {
 }
 
 export function apply(ctx: Context, config: RuntimeConfig) {
-  const logger = ctx.logger(name)
   const resolved = resolveConfig(config)
+  const logger = createScopedLogger(ctx.logger(name), resolved.logLevel)
   const nowProvider = () => resolved.now ? new Date(resolved.now) : new Date()
   const cache = new DailyImageCache(ctx.baseDir, resolved.cacheDirectory, resolved.timezone, resolved.dailyRefreshHour, nowProvider)
   const service = new PrtsCaptureService(ctx, resolved, cache, logger)
@@ -100,9 +122,9 @@ export function apply(ctx: Context, config: RuntimeConfig) {
 
   ctx.setInterval(() => {
     return runBackgroundJobs()
-  }, 10 * 60 * 1000)
+  }, 60 * 1000)
 
-  logger.info('Miyako 游戏情报插件已加载。')
+  logger.info(`Miyako 游戏情报插件已加载。补缓存 ${resolved.refreshCron}；推送 ${resolved.scheduledPush.enabled ? resolved.scheduledPush.cron : '关闭'}。`)
 
   async function refreshTarget(session: any, rawTarget: string) {
     const target = rawTarget.toLowerCase().replace(/[：:，,。.!！]+$/g, '')
@@ -128,19 +150,31 @@ export function apply(ctx: Context, config: RuntimeConfig) {
 
   async function runScheduledPushIfDue() {
     const schedule = resolved.scheduledPush
-    if (!schedule.enabled) return
+    if (!schedule.enabled) {
+      logger.debug('PRTS 定时推送跳过：未启用。')
+      return
+    }
 
     const channels = schedule.channels.map((item) => item.trim()).filter(Boolean)
-    if (!channels.length) return
+    if (!channels.length) {
+      logger.debug('PRTS 定时推送跳过：频道白名单为空。')
+      return
+    }
     const now = nowProvider()
     const parts = getZonedParts(now, resolved.timezone)
-    const isDue = parts.hour > schedule.hour || (parts.hour === schedule.hour && parts.minute >= schedule.minute)
-    if (!isDue) return
+    if (!matchesCronExpression(schedule.cron, parts)) {
+      logger.debug(`PRTS 定时推送未到触发时间：${schedule.cron}`)
+      return
+    }
 
     const dayKey = getPrtsDayKey(now, resolved.timezone, resolved.dailyRefreshHour)
-    if (dayKey === lastPushedDayKey) return
+    if (dayKey === lastPushedDayKey) {
+      logger.debug(`PRTS 定时推送跳过：${dayKey} 已推送。`)
+      return
+    }
 
     try {
+      logger.info(`PRTS 定时推送开始：${dayKey}，频道 ${channels.length} 个。`)
       const daily = await service.getDailyInfo(false)
       await ctx.broadcast(channels, service.toImageFragment(daily), true)
       lastPushedDayKey = dayKey
@@ -168,7 +202,9 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
     cacheDirectory: config.cacheDirectory || 'data/miyako-intel/cache',
     timezone: config.timezone || 'Asia/Shanghai',
     dailyRefreshHour: config.dailyRefreshHour ?? 4,
-    scheduledRefreshMinute: config.scheduledRefreshMinute ?? 5,
+    scheduledRefreshMinute: config.scheduledRefreshMinute,
+    refreshCron: config.refreshCron || `${config.scheduledRefreshMinute ?? 5} ${config.dailyRefreshHour ?? 4} * * *`,
+    logLevel: config.logLevel || 'info',
     navigationTimeoutMs: config.navigationTimeoutMs ?? 45000,
     renderDelayMs: config.renderDelayMs ?? 1000,
     viewportWidth: config.viewportWidth ?? 1366,
@@ -177,8 +213,9 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
     scheduledPush: {
       enabled: config.scheduledPush?.enabled ?? false,
       channels: config.scheduledPush?.channels ?? [],
-      hour: config.scheduledPush?.hour ?? 4,
-      minute: config.scheduledPush?.minute ?? 10,
+      cron: config.scheduledPush?.cron || `${config.scheduledPush?.minute ?? 10} ${config.scheduledPush?.hour ?? 4} * * *`,
+      hour: config.scheduledPush?.hour,
+      minute: config.scheduledPush?.minute,
     },
     now: config.now || undefined,
   }
@@ -186,4 +223,20 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function createScopedLogger(base: any, level: RuntimeConfig['logLevel']) {
+  const rank = { silent: 0, warn: 1, info: 2, debug: 3 } as const
+  const current = rank[level] ?? rank.info
+  return {
+    warn(message: string) {
+      if (current >= rank.warn) base.warn(message)
+    },
+    info(message: string) {
+      if (current >= rank.info) base.info(message)
+    },
+    debug(message: string) {
+      if (current >= rank.debug) (base.debug || base.info).call(base, message)
+    },
+  }
 }

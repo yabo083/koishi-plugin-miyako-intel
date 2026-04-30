@@ -1,6 +1,7 @@
 import { h } from 'koishi'
 import { CachedImageResult, CaptureKind, Config } from '../types'
 import { DailyImageCache, getZonedParts } from './cache'
+import { matchesCronExpression } from './cron'
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 export const DAILY_CAPTURE_ID = 'prts-capture-daily-v2'
@@ -26,6 +27,14 @@ export function getCountdownUrgencyClass(hours: number) {
   if (hours < 12) return 'danger'
   if (hours < 72) return 'warn'
   return 'safe'
+}
+
+export function shouldRemoveFromStatusColumn(text: string) {
+  return /全局剿灭|常驻中坚|采购凭证区|信物库存|后结束|后刷新/.test(text)
+}
+
+export function shouldRemoveFromCoreColumn(text: string) {
+  return /现在时间|今日资源收集|物资筹备分区|芯片搜索分区|资质凭证采购/.test(text)
 }
 
 export function isNoiseNodeText(text: string) {
@@ -344,7 +353,7 @@ export class PrtsCaptureService {
     private readonly ctx: any,
     private readonly config: Config,
     private readonly cache: DailyImageCache,
-    private readonly logger: { warn: (message: string) => void; info: (message: string) => void },
+    private readonly logger: { warn: (message: string) => void; info: (message: string) => void; debug?: (message: string) => void },
   ) {
     this.homepageUrl = new URL(config.homepagePath, config.baseUrl).toString()
   }
@@ -369,16 +378,21 @@ export class PrtsCaptureService {
   async refreshDue() {
     const now = this.getNow()
     const parts = getZonedParts(now, this.config.timezone)
-    const afterScheduledRefresh = parts.hour > this.config.dailyRefreshHour
-      || (parts.hour === this.config.dailyRefreshHour && parts.minute >= this.config.scheduledRefreshMinute)
-
-    if (!afterScheduledRefresh) return
+    if (!matchesCronExpression(this.config.refreshCron, parts)) {
+      this.logger.debug?.(`PRTS 定时刷新未到触发时间：${this.config.refreshCron}`)
+      return
+    }
 
     const needsDaily = !await this.cache.hasToday('daily')
-    if (!needsDaily) return
+    if (!needsDaily) {
+      this.logger.debug?.('PRTS 定时刷新跳过：今日缓存已存在。')
+      return
+    }
 
     try {
+      this.logger.info(`PRTS 定时刷新开始：${this.config.refreshCron}`)
       await this.getDailyInfo(true)
+      this.logger.info('PRTS 定时刷新完成。')
     } catch (error) {
       this.logger.warn(`PRTS 定时刷新失败：${formatError(error)}`)
     }
@@ -444,6 +458,8 @@ export class PrtsCaptureService {
             if (hours < 72) return 'warn'
             return 'safe'
           },
+          shouldRemoveFromStatusColumn: (text: string) => /全局剿灭|常驻中坚|采购凭证区|信物库存|后结束|后刷新/.test(text),
+          shouldRemoveFromCoreColumn: (text: string) => /现在时间|今日资源收集|物资筹备分区|芯片搜索分区|资质凭证采购/.test(text),
           extractRedcertDetailHtmlFromHtml: (html: string) => {
             const marker = /<([a-z0-9]+)\b[^>]*\bid\s*=\s*(?:"mw-customcollapsible-redcert_warn"|'mw-customcollapsible-redcert_warn'|mw-customcollapsible-redcert_warn)[^>]*>/gi
             const extractElement = (source: string, startIndex: number, tagName: string) => {
@@ -788,13 +804,13 @@ export class PrtsCaptureService {
           status.querySelectorAll<HTMLElement>('.TLDcontainer, .prts-redcert-detail, [id="mw-customcollapsible-redcert_warn"], .mw-customtoggle-redcert_warn').forEach((node) => node.remove())
           status.querySelectorAll<HTMLElement>('p, li').forEach((node) => {
             const text = node.textContent || ''
-            if (/全局剿灭|常驻中坚|采购凭证|信物库存|后结束|后刷新/.test(text)) node.remove()
+            if (parser.shouldRemoveFromStatusColumn(text)) node.remove()
           })
           removeEmptyShells(status)
 
           core.querySelectorAll<HTMLElement>('p, li').forEach((node) => {
             const text = node.textContent || ''
-            if (/现在时间|今日资源收集|物资筹备分区|芯片搜索分区/.test(text)) node.remove()
+            if (parser.shouldRemoveFromCoreColumn(text)) node.remove()
           })
           removeEmptyShells(core)
 

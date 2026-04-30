@@ -40,6 +40,7 @@ export function getZonedParts(date: Date, timezone: string) {
     day: Number(values.get('day')),
     hour: Number(values.get('hour')),
     minute: Number(values.get('minute')),
+    weekday: new Date(Date.UTC(Number(values.get('year')), Number(values.get('month')) - 1, Number(values.get('day')))).getUTCDay(),
   }
 }
 

@@ -4,7 +4,9 @@ export interface Config {
   cacheDirectory: string
   timezone: string
   dailyRefreshHour: number
-  scheduledRefreshMinute: number
+  scheduledRefreshMinute?: number
+  refreshCron: string
+  logLevel: LogLevel
   navigationTimeoutMs: number
   renderDelayMs: number
   viewportWidth: number
@@ -17,9 +19,12 @@ export interface Config {
 export interface ScheduledPushConfig {
   enabled: boolean
   channels: string[]
-  hour: number
-  minute: number
+  cron: string
+  hour?: number
+  minute?: number
 }
+
+export type LogLevel = 'silent' | 'warn' | 'info' | 'debug'
 
 export type CaptureKind = 'daily'
 
