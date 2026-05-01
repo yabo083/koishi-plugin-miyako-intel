@@ -11,6 +11,8 @@ const {
   hasRedcertRawDetailText,
   extractRedcertDetailHtmlFromHtml,
   shouldDiscardOriginalRedcertNode,
+  isTimedInfoDetailNode,
+  shouldDiscardOriginalTimedInfoNode,
   buildDailyTerminalStyles,
   getCountdownUrgencyClass,
   shouldRemoveFromCoreColumn,
@@ -105,6 +107,18 @@ test('shouldDiscardOriginalRedcertNode removes only raw duplicated detail', () =
   assert.equal(shouldDiscardOriginalRedcertNode(ancestor), false)
 })
 
+test('generic timed info helpers preserve current PRTS web-event detail', () => {
+  const toggle = '<div class="mw-customtoggle-PRTShome_webevent mw-collapsible" id="mw-customcollapsible-PRTShome_webevent">尚有正在进行中的网页活动！</div>'
+  const detail = '<div class="mw-collapsible mw-collapsed" id="mw-customcollapsible-PRTShome_webevent"><div style="background:#e1e9ff">网页活动『<a href="/w/足迹">足迹</a>』将于<b><span class="CDScontainer"></span></b>后结束。</div></div>'
+  const rendered = '<div class="prts-timed-detail">网页活动『足迹』将于后结束。</div>'
+
+  assert.equal(isTimedInfoDetailNode(toggle), false)
+  assert.equal(isTimedInfoDetailNode(detail), true)
+  assert.equal(shouldDiscardOriginalTimedInfoNode(toggle), false)
+  assert.equal(shouldDiscardOriginalTimedInfoNode(detail), true)
+  assert.equal(shouldDiscardOriginalTimedInfoNode(rendered), false)
+})
+
 test('buildDailyTerminalStyles uses Rhodes terminal visual system', () => {
   const css = buildDailyTerminalStyles('capture-test')
 
@@ -114,6 +128,7 @@ test('buildDailyTerminalStyles uses Rhodes terminal visual system', () => {
   assert.match(css, /grid-template-columns:\s*1fr\s+2fr\s+1fr/)
   assert.match(css, /font-variant-numeric:\s*tabular-nums/)
   assert.match(css, /\.prts-countdown-meter/)
+  assert.match(css, /\.prts-timed-detail/)
   assert.match(css, /\.prts-terminal-column/)
   assert.match(css, /\.prts-card--core/)
   assert.match(css, /\.prts-card--status/)
@@ -144,8 +159,11 @@ test('today split sends combat dynamics to core column only', () => {
   assert.equal(shouldRemoveFromStatusColumn('本轮『常驻中坚寻访』将于5小时后结束。'), true)
   assert.equal(shouldRemoveFromStatusColumn('采购凭证区信物即将刷新 18小时+'), true)
   assert.equal(shouldRemoveFromStatusColumn('采购凭证区的信物库存将于18小时后刷新。'), true)
+  assert.equal(shouldRemoveFromStatusColumn('尚有正在进行中的网页活动！'), true)
+  assert.equal(shouldRemoveFromStatusColumn('网页活动『足迹』将于23天后结束。'), true)
 
   assert.equal(shouldRemoveFromCoreColumn('全局剿灭模拟开放中，24天12小时后结束。'), false)
   assert.equal(shouldRemoveFromCoreColumn('本轮『常驻中坚寻访』将于5小时后结束。'), false)
   assert.equal(shouldRemoveFromCoreColumn('采购凭证区信物即将刷新 18小时+'), false)
+  assert.equal(shouldRemoveFromCoreColumn('网页活动『足迹』将于23天后结束。'), false)
 })

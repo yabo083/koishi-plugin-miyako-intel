@@ -30,7 +30,7 @@ export function getCountdownUrgencyClass(hours: number) {
 }
 
 export function shouldRemoveFromStatusColumn(text: string) {
-  return /全局剿灭|常驻中坚|采购凭证区|信物库存|后结束|后刷新/.test(text)
+  return /全局剿灭|常驻中坚|采购凭证区|信物库存|网页活动|正在进行中的网页活动|后结束|后刷新/.test(text)
 }
 
 export function shouldRemoveFromCoreColumn(text: string) {
@@ -78,6 +78,29 @@ export function shouldDiscardOriginalRedcertNode(html: string) {
   if (getAttribute(attrs, 'id') !== 'mw-customcollapsible-redcert_warn') return false
   if (/\bmw-customtoggle-redcert_warn\b/.test(classText)) return false
   return isRedcertDetailNode(html)
+}
+
+export function isTimedInfoDetailNode(html: string) {
+  const firstTag = html.match(/<([a-z0-9]+)\b([^>]*)>/i)
+  if (!firstTag) return false
+  const attrs = firstTag[2] || ''
+  const id = getAttribute(attrs, 'id')
+  const classText = getAttribute(attrs, 'class')
+  if (!/^mw-customcollapsible-/.test(id)) return false
+  if (/\bmw-customtoggle-/.test(classText)) return false
+
+  const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  const normalizedText = text.replace(/\s+/g, '')
+  return /将于/.test(normalizedText) && /(后结束|后刷新|以下信物将会被刷新)/.test(normalizedText)
+}
+
+export function shouldDiscardOriginalTimedInfoNode(html: string) {
+  const firstTag = html.match(/<([a-z0-9]+)\b([^>]*)>/i)
+  if (!firstTag) return false
+  const attrs = firstTag[2] || ''
+  const classText = getAttribute(attrs, 'class')
+  if (/\bprts-(redcert|timed)-detail\b/.test(classText)) return false
+  return isTimedInfoDetailNode(html)
 }
 
 export function buildDailyTerminalStyles(captureId: string) {
@@ -305,6 +328,43 @@ export function buildDailyTerminalStyles(captureId: string) {
     .prts-redcert-detail b {
       color: #ffffff !important;
     }
+    .prts-timed-header,
+    .prts-timed-detail {
+      color: #f7fbff !important;
+      text-shadow: none !important;
+    }
+    .prts-timed-header {
+      padding: 7px 10px !important;
+      border: 1px solid rgba(0,178,255,.28) !important;
+      background: linear-gradient(90deg, rgba(0,116,171,.52), rgba(0,178,255,.12)) !important;
+      font-weight: 800 !important;
+    }
+    .prts-timed-detail {
+      position: relative;
+      margin-top: 6px !important;
+      padding: 9px 12px 9px 36px !important;
+      border: 1px solid rgba(0,178,255,.28) !important;
+      border-left: 3px solid #00b2ff !important;
+      background: rgba(0,178,255,.075) !important;
+    }
+    .prts-timed-detail::before {
+      content: "[i]";
+      position: absolute;
+      left: 11px;
+      top: 9px;
+      color: #00b2ff;
+      font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+      font-weight: 900;
+    }
+    .prts-timed-detail * {
+      color: #f7fbff !important;
+      background: transparent !important;
+      border-color: transparent !important;
+      text-shadow: none !important;
+    }
+    .prts-timed-detail .mdi {
+      display: none !important;
+    }
     .prts-card [id="mw-customcollapsible-redcert_warn"],
     .prts-card .mw-customtoggle-redcert_warn {
       color: #fff !important;
@@ -458,7 +518,7 @@ export class PrtsCaptureService {
             if (hours < 72) return 'warn'
             return 'safe'
           },
-          shouldRemoveFromStatusColumn: (text: string) => /全局剿灭|常驻中坚|采购凭证区|信物库存|后结束|后刷新/.test(text),
+          shouldRemoveFromStatusColumn: (text: string) => /全局剿灭|常驻中坚|采购凭证区|信物库存|网页活动|正在进行中的网页活动|后结束|后刷新/.test(text),
           shouldRemoveFromCoreColumn: (text: string) => /现在时间|今日资源收集|物资筹备分区|芯片搜索分区|资质凭证采购/.test(text),
           extractRedcertDetailHtmlFromHtml: (html: string) => {
             const marker = /<([a-z0-9]+)\b[^>]*\bid\s*=\s*(?:"mw-customcollapsible-redcert_warn"|'mw-customcollapsible-redcert_warn'|mw-customcollapsible-redcert_warn)[^>]*>/gi
@@ -486,7 +546,7 @@ export class PrtsCaptureService {
             if (!firstTag) return false
             const attrs = firstTag[2] || ''
             const attr = (name: string) => {
-              const match = new RegExp(`${name}\\\\s*=\\\\s*(?:"([^"]*)"|'([^']*)'|([^\\\\s>]+))`, 'i').exec(attrs)
+              const match = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)
               return match?.[1] ?? match?.[2] ?? match?.[3] ?? ''
             }
             const classText = attr('class')
@@ -494,6 +554,33 @@ export class PrtsCaptureService {
             if (attr('id') !== 'mw-customcollapsible-redcert_warn') return false
             if (/\bmw-customtoggle-redcert_warn\b/.test(classText)) return false
             return parser.isRedcertDetailNode(html)
+          },
+          isTimedInfoDetailNode: (html: string) => {
+            const firstTag = html.match(/<([a-z0-9]+)\b([^>]*)>/i)
+            if (!firstTag) return false
+            const attrs = firstTag[2] || ''
+            const attr = (name: string) => {
+              const match = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)
+              return match?.[1] ?? match?.[2] ?? match?.[3] ?? ''
+            }
+            const id = attr('id')
+            const classText = attr('class')
+            if (!/^mw-customcollapsible-/.test(id)) return false
+            if (/\bmw-customtoggle-/.test(classText)) return false
+            const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+            const normalizedText = text.replace(/\s+/g, '')
+            return /将于/.test(normalizedText) && /(后结束|后刷新|以下信物将会被刷新)/.test(normalizedText)
+          },
+          shouldDiscardOriginalTimedInfoNode: (html: string) => {
+            const firstTag = html.match(/<([a-z0-9]+)\b([^>]*)>/i)
+            if (!firstTag) return false
+            const attrs = firstTag[2] || ''
+            const classText = (new RegExp(`class\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)?.[1]
+              || new RegExp(`class\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)?.[2]
+              || new RegExp(`class\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)?.[3]
+              || '')
+            if (/\bprts-(redcert|timed)-detail\b/.test(classText)) return false
+            return parser.isTimedInfoDetailNode(html)
           },
         }
 
@@ -716,6 +803,59 @@ export class PrtsCaptureService {
           if (detailCandidate.parentElement) detailCandidate.remove()
         }
 
+        const normalizeTimedInfoPanels = (root: HTMLElement) => {
+          const ids = Array.from(new Set(
+            Array.from(root.querySelectorAll<HTMLElement>('[id^="mw-customcollapsible-"]'))
+              .map((node) => node.id)
+              .filter((id) => id && id !== 'mw-customcollapsible-redcert_warn'),
+          ))
+
+          for (const id of ids) {
+            const nodes = Array.from(root.querySelectorAll<HTMLElement>('[id^="mw-customcollapsible-"]')).filter((node) => node.id === id)
+            const detailCandidate = nodes.find((node) => parser.isTimedInfoDetailNode(node.outerHTML))
+            if (!detailCandidate) continue
+
+            const toggleBars = nodes.filter((node) => /\bmw-customtoggle-/.test(node.className || ''))
+            const header = toggleBars[0] || nodes.find((node) => node !== detailCandidate) || null
+            if (header) {
+              header.classList.add('prts-timed-header')
+              header.querySelectorAll<HTMLElement>('.mdi, .mw-collapsible-toggle, .mw-collapsible-toggle-default').forEach((node) => node.remove())
+            }
+            for (let i = 1; i < toggleBars.length; i += 1) toggleBars[i].remove()
+
+            const detailPanel = detailCandidate.cloneNode(true) as HTMLElement
+            forceExpand(detailPanel)
+            detailPanel.classList.add('prts-timed-detail')
+            detailPanel.classList.remove('mw-collapsed')
+            detailPanel.removeAttribute('id')
+            detailPanel.removeAttribute('style')
+            detailPanel.querySelectorAll<HTMLElement>('.mw-collapsible-toggle,.mw-collapsible-toggle-default,[id^="mw-customcollapsible-"],[class*="mw-customtoggle-"]').forEach((node) => node.remove())
+            detailPanel.querySelectorAll<HTMLElement>('*').forEach((entry) => {
+              entry.style.removeProperty('color')
+              entry.style.removeProperty('background')
+              entry.style.removeProperty('border')
+              entry.style.removeProperty('position')
+              entry.style.removeProperty('left')
+              entry.style.removeProperty('top')
+              entry.style.removeProperty('padding')
+              entry.style.removeProperty('margin')
+              entry.style.removeProperty('max-width')
+            })
+
+            const existing = root.querySelector<HTMLElement>(`.prts-timed-detail[data-prts-source-id="${id}"]`)
+            if (existing) existing.remove()
+            detailPanel.dataset.prtsSourceId = id
+
+            if (header?.parentElement) {
+              header.insertAdjacentElement('afterend', detailPanel)
+            } else {
+              root.prepend(detailPanel)
+            }
+
+            if (detailCandidate.parentElement) detailCandidate.remove()
+          }
+        }
+
         for (const section of sections) {
           const sectionRoot = document.createElement('div')
           section.bodies.forEach((body) => sectionRoot.append(body.cloneNode(true)))
@@ -732,6 +872,7 @@ export class PrtsCaptureService {
           forceExpand(sectionRoot)
           ensureImageSource(sectionRoot)
           normalizeRedcertPanel(sectionRoot)
+          normalizeTimedInfoPanels(sectionRoot)
           decorateCountdowns(sectionRoot)
           section.bodies = [sectionRoot]
         }
@@ -764,6 +905,10 @@ export class PrtsCaptureService {
               node.remove()
             }
             if (parser.shouldDiscardOriginalRedcertNode(node.outerHTML)) {
+              node.remove()
+              return
+            }
+            if (parser.shouldDiscardOriginalTimedInfoNode(node.outerHTML)) {
               node.remove()
             }
           })
@@ -801,7 +946,7 @@ export class PrtsCaptureService {
           const status = root.cloneNode(true) as HTMLElement
           const core = root.cloneNode(true) as HTMLElement
 
-          status.querySelectorAll<HTMLElement>('.TLDcontainer, .prts-redcert-detail, [id="mw-customcollapsible-redcert_warn"], .mw-customtoggle-redcert_warn').forEach((node) => node.remove())
+          status.querySelectorAll<HTMLElement>('.TLDcontainer, .prts-redcert-detail, .prts-timed-detail, [id^="mw-customcollapsible-"], [class*="mw-customtoggle-"]').forEach((node) => node.remove())
           status.querySelectorAll<HTMLElement>('p, li').forEach((node) => {
             const text = node.textContent || ''
             if (parser.shouldRemoveFromStatusColumn(text)) node.remove()
