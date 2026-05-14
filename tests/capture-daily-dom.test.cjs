@@ -17,7 +17,9 @@ const {
   getCountdownUrgencyClass,
   shouldRemoveFromCoreColumn,
   shouldRemoveFromStatusColumn,
-} = require('../dist/services/capture.js')
+  extractOperatorNamesFromHtml,
+  extractOperatorSummaryItemsFromHtml,
+} = require('../lib/services/capture.js')
 
 test('parseRefreshHours parses day+hour+minute text', () => {
   const h = parseRefreshHours('1天15小时34分钟后刷新')
@@ -140,6 +142,25 @@ test('buildDailyTerminalStyles uses Rhodes terminal visual system', () => {
   assert.doesNotMatch(css, /#7d1020/)
 })
 
+test('buildDailyTerminalStyles accepts custom card theme variables', () => {
+  const css = buildDailyTerminalStyles('capture-test', {
+    fontFamily: '"Noto Sans SC", sans-serif',
+    backgroundColor: '#101418',
+    primaryColor: '#7dd3fc',
+    warningColor: '#facc15',
+    dangerColor: '#fb7185',
+    textColor: '#f8fafc',
+  })
+
+  assert.match(css, /--prts-font-family:\s*"Noto Sans SC", sans-serif/)
+  assert.match(css, /--prts-bg:\s*#101418/)
+  assert.match(css, /--prts-primary:\s*#7dd3fc/)
+  assert.match(css, /--prts-warning:\s*#facc15/)
+  assert.match(css, /--prts-danger:\s*#fb7185/)
+  assert.match(css, /--prts-text:\s*#f8fafc/)
+  assert.match(css, /font-family:\s*var\(--prts-font-family\)/)
+})
+
 test('today split keeps resource collection even when it mentions purchase certificates', () => {
   const resourceLine = '物资筹备分区：作战记录 / 采购凭证 / 龙门币'
   const chipLine = '芯片搜索分区：医疗&重装 / 先锋&辅助 职业芯片(组)'
@@ -166,4 +187,102 @@ test('today split sends combat dynamics to core column only', () => {
   assert.equal(shouldRemoveFromCoreColumn('本轮『常驻中坚寻访』将于5小时后结束。'), false)
   assert.equal(shouldRemoveFromCoreColumn('采购凭证区信物即将刷新 18小时+'), false)
   assert.equal(shouldRemoveFromCoreColumn('网页活动『足迹』将于23天后结束。'), false)
+})
+
+test('extractOperatorNamesFromHtml reads mp-operators anchor titles', () => {
+  const html = `
+    <div class="other"><a title="污染项">头像</a></div>
+    <div class="mp-operators">
+      <a href="/w/%E7%BB%B4%E4%BB%80%E6%88%B4%E5%B0%94" title="维什戴尔"><img alt="头像"></a>
+      <a href="/w/%E9%80%BB%E5%90%84%E6%96%AF" title="逻各斯"><img alt="头像"></a>
+      <a href="/w/%E7%BB%B4%E4%BB%80%E6%88%B4%E5%B0%94" title="维什戴尔"><img alt="重复"></a>
+    </div>`
+
+  assert.deepEqual(extractOperatorNamesFromHtml(html), ['维什戴尔', '逻各斯'])
+})
+
+test('extractOperatorSummaryItemsFromHtml keeps operator categories', () => {
+  const html = `
+    <section>
+      <h4>今天生日</h4>
+      <div class="mp-operators">
+        <a title="艾雅法拉"></a>
+        <a title="煌"></a>
+      </div>
+    </section>
+    <section>
+      <h4>新增模组</h4>
+      <div class="mp-operators">
+        <a title="令"></a>
+      </div>
+    </section>`
+
+  assert.deepEqual(extractOperatorSummaryItemsFromHtml(html), [
+    '今日生日干员：艾雅法拉、煌',
+    '新增模组干员：令',
+  ])
+})
+
+test('extractOperatorSummaryItemsFromHtml scopes category labels to each operator block', () => {
+  const html = `
+    <section>
+      <h2>亮点干员</h2>
+      <div>
+        <p>今日生日</p>
+        <div class="mp-operators"><a title="艾雅法拉"></a><a title="煌"></a></div>
+      </div>
+      <div>
+        <p>新增模组</p>
+        <div class="mp-operators"><a title="令"></a><a title="澄闪"></a></div>
+      </div>
+      <div>
+        <p>常驻标准寻访</p>
+        <div class="mp-operators"><a title="能天使"></a><a title="推进之王"></a></div>
+      </div>
+    </section>`
+
+  assert.deepEqual(extractOperatorSummaryItemsFromHtml(html), [
+    '今日生日干员：艾雅法拉、煌',
+    '新增模组干员：令、澄闪',
+    '寻访亮点干员：能天使、推进之王',
+  ])
+})
+
+test('extractOperatorSummaryItemsFromHtml splits PRTS mp-operators content groups', () => {
+  const html = `
+    <div class="mp-operators">
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">今天生日</div>
+        <div class="mp-operators-icons"><a title="仇白"></a><a title="刺玫"></a></div>
+      </div>
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">近期新增</div>
+        <div class="mp-operators-icons"><a title="维伊"></a><a title="可露希尔"></a></div>
+      </div>
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">凭证兑换</div>
+        <div class="mp-operators-icons"><a title="左乐"></a><a title="杏仁"></a></div>
+      </div>
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">中坚甄选</div>
+        <div class="mp-operators-icons"><a title="卡池一览"></a></div>
+      </div>
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">新增时装</div>
+        <div class="mp-operators-icons"><a title="阿罗玛"></a><a title="新约能天使"></a></div>
+      </div>
+      <div class="mp-operators-content">
+        <div class="mp-operators-title">新增模组</div>
+        <div class="mp-operators-icons"><a title="维伊#军械库"></a><a title="裂响#漂洗"></a></div>
+      </div>
+    </div>`
+
+  assert.deepEqual(extractOperatorSummaryItemsFromHtml(html), [
+    '今日生日干员：仇白、刺玫',
+    '近期新增干员：维伊、可露希尔',
+    '凭证兑换干员：左乐、杏仁',
+    '中坚甄选干员：卡池一览',
+    '新增时装干员：阿罗玛、新约能天使',
+    '新增模组干员：维伊#军械库、裂响#漂洗',
+  ])
 })

@@ -11,7 +11,17 @@ export interface Config {
   renderDelayMs: number
   viewportWidth: number
   viewportHeight: number
+  deviceScaleFactor: number
+  imageFormat: ImageFormat
+  jpegQuality: number
   staleFallback: boolean
+  messagePrefix: string
+  messageSuffix: string
+  summaryMaxItems: number
+  summaryDatePreview: boolean
+  summaryDisplayItems: SummaryDisplayItemConfig[]
+  cardTheme: CardThemeConfig
+  cacheMaintenance: CacheMaintenanceConfig
   scheduledPush: ScheduledPushConfig
   now?: string
 }
@@ -24,7 +34,47 @@ export interface ScheduledPushConfig {
   minute?: number
 }
 
+export interface CacheMaintenanceConfig {
+  enabled: boolean
+  keepRecentDays: number
+  archiveEnabled: boolean
+  archiveDirectory: string
+  archiveCron: string
+  deleteAfterArchive: boolean
+}
+
+export interface CardThemeConfig {
+  fontFamily: string
+  backgroundColor: string
+  primaryColor: string
+  warningColor: string
+  dangerColor: string
+  textColor: string
+}
+
 export type LogLevel = 'silent' | 'warn' | 'info' | 'debug'
+export type ImageFormat = 'png' | 'jpeg'
+export type SummaryDisplayItemKey =
+  | 'resource'
+  | 'annihilation'
+  | 'event'
+  | 'voucher'
+  | 'operator-birthday'
+  | 'operator-recent'
+  | 'operator-voucher'
+  | 'operator-kernel-headhunting'
+  | 'operator-outfit'
+  | 'operator-new-module'
+  | 'operator-headhunting'
+  | 'operator-event'
+  | 'recent-stage'
+  | 'recent-furniture'
+  | 'recent-other'
+
+export interface SummaryDisplayItemConfig {
+  key: SummaryDisplayItemKey
+  enabled: boolean
+}
 
 export type CaptureKind = 'daily'
 
@@ -33,6 +83,10 @@ export interface CachedImageResult {
   stale: boolean
   dayKey: string
   filePath: string
+  mimeType?: string
+  titles?: string[]
+  sourceUrls?: string[]
+  summaryItems?: SummarySection[]
 }
 
 export interface CacheManifest {
@@ -41,4 +95,11 @@ export interface CacheManifest {
   generatedAt: string
   sourceUrls: string[]
   titles?: string[]
+  mimeType?: string
+  summaryItems?: SummarySection[]
+}
+
+export interface SummarySection {
+  title: string
+  items: string[]
 }

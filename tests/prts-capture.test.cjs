@@ -6,7 +6,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const rootDir = path.resolve(__dirname, '..')
-const builtFile = path.join(rootDir, 'dist', 'index.js')
+const builtFile = path.join(rootDir, 'lib', 'index.js')
 
 function loadPlugin() {
   delete require.cache[builtFile]
@@ -90,7 +90,47 @@ const defaultConfig = {
   renderDelayMs: 0,
   viewportWidth: 1366,
   viewportHeight: 900,
+  deviceScaleFactor: 1,
+  imageFormat: 'png',
+  jpegQuality: 85,
   staleFallback: true,
+  messagePrefix: '',
+  messageSuffix: '',
+  summaryMaxItems: 8,
+  summaryDatePreview: true,
+  summaryDisplayItems: [
+    { key: 'resource', enabled: true },
+    { key: 'annihilation', enabled: true },
+    { key: 'event', enabled: true },
+    { key: 'voucher', enabled: true },
+    { key: 'operator-birthday', enabled: true },
+    { key: 'operator-recent', enabled: true },
+    { key: 'operator-voucher', enabled: true },
+    { key: 'operator-kernel-headhunting', enabled: true },
+    { key: 'operator-outfit', enabled: true },
+    { key: 'operator-new-module', enabled: true },
+    { key: 'operator-headhunting', enabled: true },
+    { key: 'operator-event', enabled: true },
+    { key: 'recent-stage', enabled: false },
+    { key: 'recent-furniture', enabled: true },
+    { key: 'recent-other', enabled: true },
+  ],
+  cardTheme: {
+    fontFamily: '',
+    backgroundColor: '',
+    primaryColor: '',
+    warningColor: '',
+    dangerColor: '',
+    textColor: '',
+  },
+  cacheMaintenance: {
+    enabled: true,
+    keepRecentDays: 7,
+    archiveEnabled: true,
+    archiveDirectory: 'archives',
+    archiveCron: '30 4 * * *',
+    deleteAfterArchive: true,
+  },
   scheduledPush: {
     enabled: false,
     channels: [],
@@ -121,6 +161,7 @@ test('config guide stays compact and shows onebot channel example', () => {
   assert.match(usage, /onebot:11111111/)
   assert.match(usage, /prts d/)
   assert.match(usage, /分钟 小时 日期 月份 星期/)
+  assert.doesNotMatch(json, /summaryFeaturedOperatorCategories/)
 })
 
 test('registers only the daily Koishi dot command', async () => {
@@ -142,6 +183,295 @@ test('registers only the daily Koishi dot command', async () => {
   assert.deepEqual(calls.filter((item) => item === 'captureDaily'), ['captureDaily'])
   assert.equal(sent.filter((item) => String(item).includes('base64')).length, 1)
   assert.match(text, /已发送/)
+})
+
+test('summary command sends reusable daily text without image capture duplication', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, defaultConfig)
+
+  const handler = commandHandlers.get('prts.s')
+  assert.equal(typeof handler, 'function')
+
+  const text = await handler({ session: createSession() })
+
+  assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
+  assert.equal(sent.length, 1)
+  assert.match(String(sent[0]), /PRTS 今日摘要/)
+  assert.match(String(sent[0]), /今日开放：龙门币 \/ 作战记录/)
+  assert.match(String(sent[0]), /亮点干员：维什戴尔/)
+  assert.match(text, /摘要已发送/)
+})
+
+test('summary command cleans redundant text, previews dates, and filters operator display items', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      { title: '核心动态', items: ['网页活动『足迹』将于2天后结束。', '网页活动『足迹』将于2天后结束。'] },
+      { title: '亮点干员', items: ['今日生日干员：艾雅法拉', '常驻标准寻访：能天使', '新增模组干员：令 - 模组任务开放'] },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    now: '2026-05-14T08:00:00.000+08:00',
+    summaryDisplayItems: [
+      { key: 'resource', enabled: true },
+      { key: 'annihilation', enabled: true },
+      { key: 'event', enabled: true },
+      { key: 'voucher', enabled: true },
+      { key: 'operator-birthday', enabled: true },
+      { key: 'operator-recent', enabled: true },
+      { key: 'operator-voucher', enabled: true },
+      { key: 'operator-kernel-headhunting', enabled: true },
+      { key: 'operator-outfit', enabled: true },
+      { key: 'operator-new-module', enabled: true },
+      { key: 'operator-headhunting', enabled: false },
+      { key: 'operator-event', enabled: false },
+      { key: 'recent-stage', enabled: false },
+      { key: 'recent-furniture', enabled: true },
+      { key: 'recent-other', enabled: true },
+    ],
+  })
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.match(summary, /1\. 网页活动『足迹』/)
+  assert.match(summary, /截止日期：5月16日（周六）/)
+  assert.match(summary, /剩余时间：约 2 天/)
+  assert.match(summary, /今日生日干员：艾雅法拉/)
+  assert.match(summary, /新增模组干员：令 - 模组任务开放/)
+  assert.doesNotMatch(summary, /常驻标准寻访/)
+  assert.equal(summary.match(/网页活动『足迹』/g).length, 1)
+})
+
+test('summary display table keeps birthday operator items after operator title extraction', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      { title: '亮点干员', items: ['今日生日干员：艾雅法拉、煌', '亮点干员：维什戴尔、逻各斯'] },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    summaryDisplayItems: [
+      { key: '生日干员。', enabled: true },
+      { key: '近期新增干员。', enabled: false },
+      { key: '凭证兑换干员。', enabled: false },
+      { key: '中坚甄选干员。', enabled: false },
+      { key: '新增时装干员。', enabled: false },
+      { key: '新增模组干员。', enabled: false },
+      { key: '寻访/卡池干员。', enabled: false },
+      { key: '活动相关干员。', enabled: false },
+    ],
+  })
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.match(summary, /今日生日干员：艾雅法拉、煌/)
+  assert.doesNotMatch(summary, /维什戴尔/)
+})
+
+test('summary display table disables stage notices by default', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      { title: '近期新增', items: ['新增关卡 H17-1 急变预案-1 H17-2 急变预案-2', '新增家具 主题 单件'] },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    summaryDisplayItems: undefined,
+  })
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.doesNotMatch(summary, /新增关卡/)
+  assert.match(summary, /新增家具/)
+})
+
+test('summary display table can disable resource lines and enable stage notices', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      { title: '系统状态', items: ['今日资源收集物资筹备分区：作战记录 / 龙门币 芯片搜索分区：医疗&重装'] },
+      { title: '近期新增', items: ['新增关卡 H17-1 急变预案-1', '新增家具 主题 单件'] },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    summaryDisplayItems: [
+      { key: 'resource', enabled: false },
+      { key: 'recent-stage', enabled: true },
+      { key: 'recent-furniture', enabled: true },
+    ],
+  })
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.doesNotMatch(summary, /今日资源收集/)
+  assert.match(summary, /新增关卡/)
+  assert.match(summary, /新增家具/)
+})
+
+test('summary command removes clock-only noise and deduplicates cleaned items', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      {
+        title: '系统状态',
+        items: [
+          '现在时间：5月14日(周四) 09:57。',
+          '现在时间：5月14日(周四) 09:57。 今日资源收集物资筹备分区：作战记录 / 采购凭证',
+          '今日资源收集物资筹备分区：作战记录 / 采购凭证',
+        ],
+      },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, defaultConfig)
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.doesNotMatch(summary, /现在时间/)
+  assert.equal(summary.match(/今日资源收集/g).length, 1)
+})
+
+test('summary command uses numbered items, semantic continuation lines, and humanized dates', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      {
+        title: '核心动态',
+        items: [
+          '全局剿灭模拟开放中，10天18小时1分钟后结束。',
+          '活动「七周年庆典签到」将于18小时1分钟后结束。',
+          '采购凭证区的信物库存将于51日16小时后刷新，以下信物将会被刷新：推进之王/赫拉格。',
+        ],
+      },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    now: '2026-05-14T09:57:00.000+08:00',
+  })
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.match(summary, /1\. 全局剿灭模拟开放中/)
+  assert.match(summary, /截止日期：5月25日（周一）/)
+  assert.match(summary, /剩余时间：约 11 天（跨 2 个结算周）/)
+  assert.match(summary, /2\. 活动「七周年庆典签到」/)
+  assert.match(summary, /截止日期：5月15日（周五）/)
+  assert.match(summary, /剩余时间：约 19 小时/)
+  assert.match(summary, /3\. 采购凭证区的信物库存/)
+  assert.match(summary, /刷新日期：7月5日（周日）/)
+  assert.match(summary, /剩余时间：约 52 天（跨 8 个结算周）/)
+  assert.doesNotMatch(summary, /^- /m)
+  assert.doesNotMatch(summary, /下下周/)
+  assert.doesNotMatch(summary, /明天|后天/)
+})
+
+test('summary command splits resource collection into semantic continuation lines', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({
+    calls,
+    summaryItems: [
+      {
+        title: '系统状态',
+        items: [
+          '今日资源收集物资筹备分区：作战记录 / 采购凭证 / 龙门币 芯片搜索分区：医疗&重装 / 先锋&辅助 职业芯片(组)',
+        ],
+      },
+    ],
+  })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, defaultConfig)
+
+  const handler = commandHandlers.get('prts.s')
+  await handler({ session: createSession() })
+
+  const summary = String(sent[0])
+  assert.match(summary, /1\. 今日资源收集：/)
+  assert.match(summary, /\n   物资筹备分区：作战记录 \/ 采购凭证 \/ 龙门币/)
+  assert.match(summary, /\n   芯片搜索分区：医疗&重装 \/ 先锋&辅助 职业芯片\(组\)/)
+})
+
+test('refresh summary target refreshes daily manifest and sends text only', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, defaultConfig)
+
+  const handler = commandHandlers.get('prts.r [target:string]')
+  const text = await handler({ session: createSession() }, 's')
+
+  assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
+  assert.equal(sent.length, 1)
+  assert.match(String(sent[0]), /PRTS 今日摘要/)
+  assert.doesNotMatch(String(sent[0]), /base64/)
+  assert.match(text, /今日摘要/)
+})
+
+test('manual daily command wraps image with custom prefix and suffix', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    messagePrefix: '博士，今日情报已整理：',
+    messageSuffix: '以上，祝作战顺利。',
+  })
+
+  const handler = commandHandlers.get('prts.d')
+  await handler({ session: createSession() })
+
+  assert.equal(sent[0], '博士，今日情报已整理：')
+  assert.match(String(sent[1]), /base64/)
+  assert.equal(sent[2], '以上，祝作战顺利。')
 })
 
 test('Koishi resolves prts d input to the prts.d subcommand', () => {
@@ -231,6 +561,85 @@ test('scheduled push only broadcasts to allowed channels when enabled', async ()
   assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
 })
 
+test('scheduled push wraps broadcast content with custom prefix and suffix', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, intervals, broadcastCalls } = createMockContext({ puppeteer })
+
+  const config = {
+    ...defaultConfig,
+    now: '2026-04-29T05:12:00.000+08:00',
+    messagePrefix: 'PRTS 今日情报：',
+    messageSuffix: '来源：prts.wiki',
+    scheduledPush: {
+      enabled: true,
+      channels: ['sandbox:group-1'],
+      cron: '12 5 * * *',
+    },
+  }
+
+  apply(ctx, config)
+  await intervals[0].callback()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(broadcastCalls.length, 1)
+  assert.match(String(broadcastCalls[0].content), /PRTS 今日情报/)
+  assert.match(String(broadcastCalls[0].content), /base64/)
+  assert.match(String(broadcastCalls[0].content), /来源：prts\.wiki/)
+})
+
+test('screenshot quality config controls viewport scale and output format', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer })
+
+  apply(ctx, {
+    ...defaultConfig,
+    deviceScaleFactor: 2,
+    imageFormat: 'jpeg',
+    jpegQuality: 92,
+  })
+
+  const handler = commandHandlers.get('prts.d')
+  await handler({ session: createSession() })
+
+  assert.deepEqual(calls.find((item) => item.kind === 'viewport'), {
+    kind: 'viewport',
+    width: 1366,
+    height: 900,
+    deviceScaleFactor: 2,
+  })
+  assert.deepEqual(calls.find((item) => item.kind === 'screenshot'), {
+    kind: 'screenshot',
+    type: 'jpeg',
+    quality: 92,
+  })
+})
+
+test('cache command reports actual cache location and current day status', async () => {
+  const { apply } = loadPlugin()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prts-cache-command-'))
+  const todayDir = path.join(baseDir, 'data/miyako-intel/cache', '2026-04-28')
+  fs.mkdirSync(todayDir, { recursive: true })
+  fs.writeFileSync(path.join(todayDir, 'daily.png'), Buffer.from('today'))
+  const { ctx, commandHandlers } = createMockContext({ baseDir })
+
+  apply(ctx, defaultConfig)
+
+  const handler = commandHandlers.get('prts.cache')
+  assert.equal(typeof handler, 'function')
+
+  const text = await handler()
+
+  assert.match(text, /PRTS 缓存诊断/)
+  assert.match(text, /当前缓存日：2026-04-28/)
+  assert.match(text, /今日缓存：存在/)
+  assert.match(text, /最近缓存：2026-04-28/)
+  assert.match(text, /data[\\/]miyako-intel[\\/]cache/)
+})
+
 test('scheduled push waits for cron expression minute', async () => {
   const { apply } = loadPlugin()
   const calls = []
@@ -279,6 +688,23 @@ test('silent log level suppresses routine scheduled push logs', async () => {
   assert.equal(loggerLines.length, 0)
 })
 
+test('registers console client entry when console service is available', () => {
+  const { apply } = loadPlugin()
+  const entries = []
+  const { ctx } = createMockContext()
+  ctx.console = {
+    addEntry(entry) {
+      entries.push(entry)
+    },
+  }
+
+  apply(ctx, defaultConfig)
+
+  assert.equal(entries.length, 1)
+  assert.match(entries[0].dev, /client[\\/]index\.ts$/)
+  assert.match(entries[0].prod, /dist$/)
+})
+
 function createFailingPuppeteer() {
   return {
     async page() {
@@ -292,19 +718,21 @@ function createFailingPuppeteer() {
   }
 }
 
-function createFakePuppeteer({ calls }) {
+function createFakePuppeteer({ calls, summaryItems }) {
   return {
     async page() {
-      return createFakePage(calls)
+      return createFakePage(calls, summaryItems)
     },
   }
 }
 
-function createFakePage(calls) {
+function createFakePage(calls, summaryItems) {
   return {
     currentUrl: '',
     async setUserAgent() {},
-    async setViewport() {},
+    async setViewport(viewport) {
+      calls.push({ kind: 'viewport', ...viewport })
+    },
     async goto(url) {
       this.currentUrl = url
     },
@@ -315,22 +743,30 @@ function createFakePage(calls) {
     async waitForTimeout() {},
     async content() { return '' },
     async evaluate(fn, arg) {
-      const source = String(fn)
-      if (source.includes('prts-capture-daily')) return true
+      if (arg?.captureId === 'prts-capture-daily-v2') {
+        return {
+          missing: [],
+          summaryItems: summaryItems || [
+            { title: '今日信息', items: ['今日开放：龙门币 / 作战记录'] },
+            { title: '亮点干员', items: ['亮点干员：维什戴尔'] },
+          ],
+        }
+      }
       return true
     },
     async $(selector) {
-      if (selector === '#prts-capture-daily') return fakeElement('daily-image')
-      if (selector === '#prts-capture-daily-v2') return fakeElement('daily-image')
+      if (selector === '#prts-capture-daily') return fakeElement('daily-image', calls)
+      if (selector === '#prts-capture-daily-v2') return fakeElement('daily-image', calls)
       return null
     },
     async close() {},
   }
 }
 
-function fakeElement(text) {
+function fakeElement(text, calls) {
   return {
-    async screenshot() {
+    async screenshot(options) {
+      calls.push({ kind: 'screenshot', ...options })
       return Buffer.from(text)
     },
   }

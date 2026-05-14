@@ -1,5 +1,5 @@
 import { h } from 'koishi'
-import { CachedImageResult, CaptureKind, Config } from '../types'
+import { CachedImageResult, CaptureKind, Config, CardThemeConfig, SummaryDisplayItemKey, SummarySection } from '../types'
 import { DailyImageCache, getZonedParts } from './cache'
 import { matchesCronExpression } from './cron'
 
@@ -103,25 +103,106 @@ export function shouldDiscardOriginalTimedInfoNode(html: string) {
   return isTimedInfoDetailNode(html)
 }
 
-export function buildDailyTerminalStyles(captureId: string) {
+export function extractOperatorNamesFromHtml(html: string) {
+  const names: string[] = []
+  const seen = new Set<string>()
+  const containerPattern = /<([a-z0-9]+)\b[^>]*class\s*=\s*(?:"[^"]*\bmp-operators\b[^"]*"|'[^']*\bmp-operators\b[^']*'|[^\s>]*\bmp-operators\b[^\s>]*)[^>]*>([\s\S]*?)<\/\1>/gi
+  let container: RegExpExecArray | null
+  while ((container = containerPattern.exec(html))) {
+    const anchorPattern = /<a\b[^>]*\btitle\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi
+    let anchor: RegExpExecArray | null
+    while ((anchor = anchorPattern.exec(container[2]))) {
+      const name = decodeHtmlText(anchor[1] || anchor[2] || anchor[3] || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      names.push(name)
+    }
+  }
+  return names
+}
+
+export function extractOperatorSummaryItemsFromHtml(html: string) {
+  const items: string[] = []
+  const seenLabels = new Set<string>()
+  const operatorGroups = extractOperatorGroupHtmls(html)
+  let previousContainerEnd = 0
+  for (const group of operatorGroups) {
+    const names = extractOperatorNamesFromHtml(group.html)
+    if (!names.length) {
+      previousContainerEnd = group.end
+      continue
+    }
+    const title = extractOperatorGroupTitle(group.html)
+    const localContextHtml = html.slice(previousContainerEnd, group.start)
+    const fallbackContextHtml = html.slice(Math.max(0, group.start - 240), group.start)
+    const contextHtml = title || localContextHtml.trim() || fallbackContextHtml
+    const context = contextHtml
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const label = getOperatorSummaryLabel(context)
+    const text = `${label}：${names.join('、')}`
+    if (seenLabels.has(text)) continue
+    seenLabels.add(text)
+    items.push(text)
+    previousContainerEnd = group.end
+  }
+  return items
+}
+
+function extractOperatorGroupHtmls(html: string) {
+  const groupPattern = /<div\b[^>]*class\s*=\s*(?:"[^"]*\bmp-operators-content\b[^"]*"|'[^']*\bmp-operators-content\b[^']*'|[^\s>]*\bmp-operators-content\b[^\s>]*)[^>]*>/gi
+  const groups: Array<{ html: string; start: number; end: number }> = []
+  let group: RegExpExecArray | null
+  while ((group = groupPattern.exec(html))) {
+    const groupHtml = extractBalancedElement(html, group.index, 'div')
+    if (!groupHtml) continue
+    groups.push({ html: groupHtml, start: group.index, end: group.index + groupHtml.length })
+  }
+  if (groups.length) return groups
+
+  const containerPattern = /<([a-z0-9]+)\b[^>]*class\s*=\s*(?:"[^"]*\bmp-operators\b[^"]*"|'[^']*\bmp-operators\b[^']*'|[^\s>]*\bmp-operators\b[^\s>]*)[^>]*>[\s\S]*?<\/\1>/gi
+  const containers: Array<{ html: string; start: number; end: number }> = []
+  let container: RegExpExecArray | null
+  while ((container = containerPattern.exec(html))) {
+    containers.push({ html: container[0], start: container.index, end: containerPattern.lastIndex })
+  }
+  return containers
+}
+
+function extractOperatorGroupTitle(html: string) {
+  const titlePattern = /<([a-z0-9]+)\b[^>]*class\s*=\s*(?:"[^"]*\bmp-operators-title\b[^"]*"|'[^']*\bmp-operators-title\b[^']*'|[^\s>]*\bmp-operators-title\b[^\s>]*)[^>]*>/i
+  const match = titlePattern.exec(html)
+  if (!match) return ''
+  return extractBalancedElement(html, match.index, match[1])
+}
+
+export function buildDailyTerminalStyles(captureId: string, theme: Partial<CardThemeConfig> = {}) {
+  const resolvedTheme = resolveCardTheme(theme)
   return `
     #${captureId} {
+      --prts-font-family: ${resolvedTheme.fontFamily};
+      --prts-bg: ${resolvedTheme.backgroundColor};
+      --prts-primary: ${resolvedTheme.primaryColor};
+      --prts-warning: ${resolvedTheme.warningColor};
+      --prts-danger: ${resolvedTheme.dangerColor};
+      --prts-text: ${resolvedTheme.textColor};
       width: 1280px;
       box-sizing: border-box;
       margin: 0 auto;
       padding: 18px 20px 22px;
-      color: #e7edf3 !important;
+      color: var(--prts-text) !important;
       background:
         linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
         linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
-        #1a1c1e;
+        var(--prts-bg);
       background-size: 32px 32px, 32px 32px, cover;
-      font-family: "Source Han Sans CN", "Microsoft YaHei", "Segoe UI", sans-serif;
+      font-family: var(--prts-font-family);
       line-height: 1.42;
     }
     #${captureId} * {
       box-sizing: border-box;
-      color: #e7edf3;
+      color: var(--prts-text);
       letter-spacing: 0;
     }
     #${captureId} a {
@@ -427,12 +508,23 @@ export class PrtsCaptureService {
       await session.send(staleMessage)
     }
 
-    await session.send(this.toImageFragment(result))
+    for (const message of this.wrapMessage(this.toImageFragment(result))) {
+      await session.send(message)
+    }
   }
 
   toImageFragment(result: CachedImageResult) {
-    const dataUrl = `data:image/png;base64,${result.buffer.toString('base64')}`
+    const dataUrl = `${this.toDataUrlPrefix(result)}${result.buffer.toString('base64')}`
     return h.image(dataUrl)
+  }
+
+  toBroadcastMessage(result: CachedImageResult) {
+    return this.wrapMessage(this.toImageFragment(result)).join('\n')
+  }
+
+  async getDailySummary(force = false) {
+    const result = await this.getDailyInfo(force)
+    return this.buildSummary(result)
   }
 
   async refreshDue() {
@@ -458,7 +550,7 @@ export class PrtsCaptureService {
     }
   }
 
-  private async resolveCachedImage(kind: CaptureKind, force: boolean, capture: () => Promise<{ buffer: Buffer; sourceUrls: string[]; titles?: string[] }>) {
+  private async resolveCachedImage(kind: CaptureKind, force: boolean, capture: () => Promise<{ buffer: Buffer; sourceUrls: string[]; titles?: string[]; mimeType?: string; summaryItems?: SummarySection[] }>) {
     if (!force) {
       const cached = await this.cache.readToday(kind)
       if (cached) return cached
@@ -466,7 +558,12 @@ export class PrtsCaptureService {
 
     try {
       const fresh = await capture()
-      return this.cache.write(kind, fresh.buffer, { sourceUrls: fresh.sourceUrls, titles: fresh.titles })
+      return this.cache.write(kind, fresh.buffer, {
+        sourceUrls: fresh.sourceUrls,
+        titles: fresh.titles,
+        mimeType: fresh.mimeType,
+        summaryItems: fresh.summaryItems,
+      })
     } catch (error) {
       this.logger.warn(`PRTS ${kind} 截图失败：${formatError(error)}`)
       if (this.config.staleFallback) {
@@ -478,6 +575,8 @@ export class PrtsCaptureService {
   }
 
   private async captureDailyInfo() {
+    let mimeType = this.getConfiguredMimeType()
+    let summaryItems: SummarySection[] = []
     const buffer = await this.withPage(async (page) => {
       await this.openHomepage(page)
       await page.waitForSelector('#今日信息_2', { timeout: this.config.navigationTimeoutMs })
@@ -1020,6 +1119,86 @@ export class PrtsCaptureService {
           return card
         }
 
+        const collectSummaryLines = (root: HTMLElement) => {
+          const seen = new Set<string>()
+          return Array.from(root.querySelectorAll<HTMLElement>('li,p,div'))
+            .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter((text) => text.length >= 4 && text.length <= 80)
+            .filter((text) => !/^(PRTS|SYS STATUS|ACTIVE QUEUE|OPERATOR LOG|DEPOT BRIEF)$/.test(text))
+            .filter((text) => {
+              if (seen.has(text)) return false
+              seen.add(text)
+              return true
+            })
+            .slice(0, 4)
+        }
+
+        const collectOperatorNames = (root: HTMLElement) => {
+          const seen = new Set<string>()
+          return Array.from(root.querySelectorAll<HTMLAnchorElement>('.mp-operators a[title]'))
+            .map((node) => (node.getAttribute('title') || '').replace(/\s+/g, ' ').trim())
+            .filter((name) => {
+              if (!name || seen.has(name)) return false
+              seen.add(name)
+              return true
+            })
+        }
+
+        const getOperatorLabel = (context: string) => {
+          if (/生日/.test(context)) return '今日生日干员'
+          if (/近期新增/.test(context)) return '近期新增干员'
+          if (/凭证兑换/.test(context)) return '凭证兑换干员'
+          if (/中坚甄选|甄选/.test(context)) return '中坚甄选干员'
+          if (/新增时装|时装/.test(context)) return '新增时装干员'
+          if (/模组/.test(context)) return '新增模组干员'
+          if (/寻访|卡池|常驻|标准|甄选/.test(context)) return '寻访亮点干员'
+          if (/活动/.test(context)) return '活动亮点干员'
+          return '亮点干员'
+        }
+
+        const getOperatorContext = (container: HTMLElement) => {
+          const groupTitle = container.querySelector<HTMLElement>('.mp-operators-title')
+          const groupTitleText = (groupTitle?.textContent || '').replace(/\s+/g, ' ').trim()
+          if (groupTitleText) return groupTitleText
+
+          const parts: string[] = []
+          let current: Element | null = container
+          for (let depth = 0; depth < 4 && current; depth += 1) {
+            let sibling = current.previousElementSibling
+            while (sibling && parts.length < 6) {
+              const text = (sibling.textContent || '').replace(/\s+/g, ' ').trim()
+              if (text) parts.unshift(text)
+              if (sibling.querySelector('.mp-operators')) break
+              sibling = sibling.previousElementSibling
+            }
+            if (parts.some((text) => /生日|模组|寻访|卡池|常驻|标准|活动/.test(text))) break
+            current = current.parentElement
+          }
+          return parts.join(' ')
+        }
+
+        const collectOperatorItems = (root: HTMLElement) => {
+          const items: string[] = []
+          const seen = new Set<string>()
+          const groupNodes = Array.from(root.querySelectorAll<HTMLElement>('.mp-operators-content'))
+          const containers = groupNodes.length ? groupNodes : Array.from(root.querySelectorAll<HTMLElement>('.mp-operators'))
+          containers.forEach((container) => {
+            const names = Array.from(container.querySelectorAll<HTMLAnchorElement>('a[title]'))
+              .map((node) => (node.getAttribute('title') || '').replace(/\s+/g, ' ').trim())
+              .filter(Boolean)
+            const uniqueNames = names.filter((name, index) => names.indexOf(name) === index)
+            if (!uniqueNames.length) return
+            const context = getOperatorContext(container)
+            const item = `${getOperatorLabel(context)}：${uniqueNames.join('、')}`
+            if (seen.has(item)) return
+            seen.add(item)
+            items.push(item)
+          })
+          return items
+        }
+
+        const summaryItems: Array<{ title: string; items: string[] }> = []
+
         for (const section of sections) {
           const cloned = section.bodies[0].cloneNode(true) as HTMLElement
           cleanup(cloned)
@@ -1037,16 +1216,30 @@ export class PrtsCaptureService {
 
           if (section.key === 'today') {
             const { status, core } = splitTodayContent(cloned)
+            const statusItems = collectSummaryLines(status)
+            const coreItems = collectSummaryLines(core)
+            if (statusItems.length) summaryItems.push({ title: '系统状态', items: statusItems })
+            if (coreItems.length) summaryItems.push({ title: '核心动态', items: coreItems })
             leftColumn.append(createCard('status', '◉ 系统状态', 'SYS STATUS', status))
             centerColumn.append(createCard('core', '▰ 核心动态', 'ACTIVE QUEUE', core))
             continue
           }
 
           if (section.key === 'operators') {
+            const operatorItems = collectOperatorItems(cloned)
+            const operatorNames = operatorItems.length ? [] : collectOperatorNames(cloned)
+            const items = operatorItems.length
+              ? operatorItems
+              : operatorNames.length
+                ? [`亮点干员：${operatorNames.join('、')}`]
+                : collectSummaryLines(cloned)
+            if (items.length) summaryItems.push({ title: '亮点干员', items })
             rightColumn.append(createCard('operators', '◆ 亮点干员', 'OPERATOR LOG', cloned))
             continue
           }
 
+          const items = collectSummaryLines(cloned)
+          if (items.length) summaryItems.push({ title: '近期新增', items })
           centerColumn.append(createCard('recent', '▣ 近期新增', 'DEPOT BRIEF', cloned))
         }
 
@@ -1065,17 +1258,21 @@ export class PrtsCaptureService {
         const host = document.querySelector('#mw-content-text .mw-parser-output') || document.body
         host.prepend(wrapper)
 
-        return { missing }
-      }, { captureId: DAILY_CAPTURE_ID, styles: buildDailyTerminalStyles(DAILY_CAPTURE_ID) })
+        return { missing, summaryItems }
+      }, { captureId: DAILY_CAPTURE_ID, styles: buildDailyTerminalStyles(DAILY_CAPTURE_ID, this.config.cardTheme) })
+
+      summaryItems = Array.isArray(result.summaryItems) ? result.summaryItems : []
 
       await this.waitForRenderDelay(page)
       await this.waitForImages(page)
       const target = await page.$(`#${DAILY_CAPTURE_ID}`)
       if (!target) throw new Error('今日信息截图节点创建失败(v2)')
-      let screenshot = ensureBuffer(await target.screenshot({ type: 'png' }))
+      const screenshotOptions = this.getScreenshotOptions()
+      let screenshot = ensureBuffer(await target.screenshot(screenshotOptions))
       if (screenshot.byteLength > QQ_IMAGE_MAX_BYTES) {
         this.logger.info(`PRTS daily v2 oversized image fallback applied: ${screenshot.byteLength}`)
-        screenshot = ensureBuffer(await target.screenshot({ type: 'jpeg', quality: 85 }))
+        screenshot = ensureBuffer(await target.screenshot({ type: 'jpeg', quality: this.config.jpegQuality }))
+        mimeType = 'image/jpeg'
       }
 
       if (result.missing?.length) {
@@ -1085,7 +1282,7 @@ export class PrtsCaptureService {
       return screenshot
     })
 
-    return { buffer, sourceUrls: [this.homepageUrl], titles: ['今日信息', '亮点干员', '近期新增'] }
+    return { buffer, sourceUrls: [this.homepageUrl], titles: ['今日信息', '亮点干员', '近期新增'], mimeType, summaryItems }
   }
 
   private async openHomepage(page: any) {
@@ -1102,7 +1299,11 @@ export class PrtsCaptureService {
     try {
       if (page.setUserAgent) await page.setUserAgent(USER_AGENT)
       if (page.setViewport) {
-        await page.setViewport({ width: this.config.viewportWidth, height: this.config.viewportHeight })
+        await page.setViewport({
+          width: this.config.viewportWidth,
+          height: this.config.viewportHeight,
+          deviceScaleFactor: this.config.deviceScaleFactor,
+        })
       }
       return await callback(page)
     } finally {
@@ -1129,6 +1330,174 @@ export class PrtsCaptureService {
   private getNow() {
     return this.config.now ? new Date(this.config.now) : new Date()
   }
+
+  private getScreenshotOptions() {
+    if (this.config.imageFormat === 'jpeg') {
+      return { type: 'jpeg', quality: this.config.jpegQuality }
+    }
+    return { type: 'png' }
+  }
+
+  private getConfiguredMimeType() {
+    return this.config.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png'
+  }
+
+  private toDataUrlPrefix(result: CachedImageResult) {
+    return `data:${result.mimeType || this.getConfiguredMimeType()};base64,`
+  }
+
+  private wrapMessage(content: any) {
+    const messages = []
+    const prefix = this.config.messagePrefix.trim()
+    const suffix = this.config.messageSuffix.trim()
+    if (prefix) messages.push(prefix)
+    messages.push(content)
+    if (suffix) messages.push(suffix)
+    return messages
+  }
+
+  private buildSummary(result: CachedImageResult) {
+    if (result.summaryItems?.length) {
+      const lines = [`PRTS 今日摘要（${result.dayKey}${result.stale ? '，使用旧缓存' : ''}）`]
+      let count = 0
+      const seen = new Set<string>()
+      for (const section of result.summaryItems) {
+        for (const item of section.items) {
+          if (count >= this.config.summaryMaxItems) break
+          if (!this.shouldIncludeSummaryItem(section.title, item)) continue
+          const normalized = this.normalizeSummaryItem(section.title, item)
+          if (!normalized || seen.has(normalized)) continue
+          seen.add(normalized)
+          count += 1
+          lines.push(this.formatNumberedSummaryItem(count, normalized))
+        }
+        if (count >= this.config.summaryMaxItems) break
+      }
+      if (result.sourceUrls?.[0]) lines.push(`信息源：${result.sourceUrls[0]}`)
+      return lines.join('\n')
+    }
+
+    const titles = (result.titles?.length ? result.titles : ['今日信息', '亮点干员', '近期新增'])
+      .slice(0, Math.max(1, this.config.summaryMaxItems))
+    const lines = [
+      `PRTS 今日摘要（${result.dayKey}${result.stale ? '，使用旧缓存' : ''}）`,
+      ...titles.map((title, index) => `${index + 1}. ${title}：已整理至今日情报卡。`),
+    ]
+    if (result.sourceUrls?.[0]) lines.push(`信息源：${result.sourceUrls[0]}`)
+    return lines.join('\n')
+  }
+
+  private normalizeSummaryItem(_sectionTitle: string, item: string) {
+    const compact = this.formatResourceSummaryItem(this.removeSummaryClockNoise(item.replace(/\s+/g, ' ').trim()))
+    if (!compact) return ''
+    return this.config.summaryDatePreview ? this.previewRelativeDates(compact) : compact
+  }
+
+  private formatResourceSummaryItem(item: string) {
+    if (!/^今日资源收集/.test(item) || !item.includes('物资筹备分区：') || !item.includes('芯片搜索分区：')) return item
+    const materialIndex = item.indexOf('物资筹备分区：')
+    const chipIndex = item.indexOf('芯片搜索分区：')
+    if (materialIndex < 0 || chipIndex < materialIndex) return item
+    const material = item.slice(materialIndex, chipIndex).replace(/[，,。.\s]+$/g, '').trim()
+    const chip = item.slice(chipIndex).replace(/[，,。.\s]+$/g, '').trim()
+    return ['今日资源收集：', material, chip].join('\n')
+  }
+
+  private removeSummaryClockNoise(item: string) {
+    if (!item) return ''
+    const cleaned = item
+      .replace(/^现在时间[：:]\s*[^。.]*(?:[。.]\s*)?/, '')
+      .trim()
+    if (/^现在时间[：:]/.test(cleaned)) return ''
+    return cleaned
+  }
+
+  private previewRelativeDates(item: string) {
+    const timeLines: string[] = []
+    let main = item.replace(/(?:将于\s*)?(?:(\d+)\s*[天日])?\s*(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?后(结束|刷新)/g, (match, dayText, hourText, minuteText, action) => {
+      if (!dayText && !hourText && !minuteText) return match
+      const label = action === '刷新' ? '刷新日期' : '截止日期'
+      const date = this.formatRelativeTargetDate(Number(dayText || 0), Number(hourText || 0), Number(minuteText || 0))
+      timeLines.push(`${label}：${date.dateText}`)
+      timeLines.push(`剩余时间：${date.remainingText}`)
+      return ''
+    })
+
+    main = main
+      .replace(/[，,。.\s]+$/g, '')
+      .replace(/\s*[，,]\s*以下/g, '\n详情：以下')
+      .trim()
+
+    return [main, ...timeLines].filter(Boolean).join('\n')
+  }
+
+  private formatNumberedSummaryItem(index: number, normalized: string) {
+    const [first, ...rest] = normalized.split('\n').map((line) => line.trim()).filter(Boolean)
+    return [
+      `${index}. ${first}`,
+      ...rest.map((line) => `   ${line}`),
+    ].join('\n')
+  }
+
+  private formatRelativeTargetDate(day: number, hour: number, minute: number) {
+    const now = this.getNow()
+    const totalMinutes = (day * 24 + hour) * 60 + minute
+    const target = new Date(now.getTime() + totalMinutes * 60 * 1000)
+    const parts = getZonedParts(target, this.config.timezone)
+    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    return {
+      dateText: `${parts.month}月${parts.day}日（${weekdays[parts.weekday]}）`,
+      remainingText: this.formatRemainingTime(totalMinutes),
+    }
+  }
+
+  private formatRemainingTime(totalMinutes: number) {
+    const totalHours = Math.max(0, totalMinutes / 60)
+    if (totalHours < 24) {
+      const hours = Math.max(1, Math.ceil(totalHours))
+      return `约 ${hours} 小时`
+    }
+
+    const days = Math.max(1, Math.ceil(totalHours / 24))
+    const base = `约 ${days} 天`
+    if (days < 7) return base
+    return `${base}（跨 ${Math.ceil(days / 7)} 个结算周）`
+  }
+
+  private shouldIncludeSummaryItem(sectionTitle: string, item: string) {
+    const displayKey = this.classifySummaryDisplayItem(sectionTitle, item)
+    if (!this.isSummaryDisplayItemEnabled(displayKey)) return false
+
+    return true
+  }
+
+  private isSummaryDisplayItemEnabled(key: SummaryDisplayItemKey) {
+    const item = this.config.summaryDisplayItems.find((entry) => entry.key === key)
+    return item?.enabled !== false
+  }
+
+  private classifySummaryDisplayItem(sectionTitle: string, item: string): SummaryDisplayItemKey {
+    if (/亮点干员/.test(sectionTitle)) {
+      if (/生日/.test(item)) return 'operator-birthday'
+      if (/近期新增/.test(item)) return 'operator-recent'
+      if (/凭证兑换/.test(item)) return 'operator-voucher'
+      if (/中坚甄选|甄选/.test(item)) return 'operator-kernel-headhunting'
+      if (/新增时装|时装/.test(item)) return 'operator-outfit'
+      if (/模组/.test(item)) return 'operator-new-module'
+      if (/寻访|卡池|常驻|标准/.test(item)) return 'operator-headhunting'
+      if (/活动/.test(item)) return 'operator-event'
+      return 'operator-event'
+    }
+
+    if (/今日资源收集|物资筹备分区|芯片搜索分区/.test(item)) return 'resource'
+    if (/剿灭|保全派驻/.test(item)) return 'annihilation'
+    if (/采购凭证|信物库存|资质凭证/.test(item)) return 'voucher'
+    if (/活动|网页活动/.test(item)) return 'event'
+    if (/新增关卡|\bH\d+-\d+\b|急变预案/.test(item)) return 'recent-stage'
+    if (/新增家具|家具|主题\s*单件/.test(item)) return 'recent-furniture'
+    return 'recent-other'
+  }
+
 }
 
 function extractBalancedElement(html: string, startIndex: number, tagName: string) {
@@ -1159,6 +1528,29 @@ function getAttribute(attrs: string, name: string) {
   return match?.[1] ?? match?.[2] ?? match?.[3] ?? ''
 }
 
+function getOperatorSummaryLabel(context: string) {
+  if (/生日/.test(context)) return '今日生日干员'
+  if (/近期新增/.test(context)) return '近期新增干员'
+  if (/凭证兑换/.test(context)) return '凭证兑换干员'
+  if (/中坚甄选|甄选/.test(context)) return '中坚甄选干员'
+  if (/新增时装|时装/.test(context)) return '新增时装干员'
+  if (/模组/.test(context)) return '新增模组干员'
+  if (/寻访|卡池|常驻|标准|甄选/.test(context)) return '寻访亮点干员'
+  if (/活动/.test(context)) return '活动亮点干员'
+  return '亮点干员'
+}
+
+function decodeHtmlText(input: string) {
+  return input
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
@@ -1179,4 +1571,15 @@ function ensureBuffer(source: unknown) {
     ? (source as { constructor?: { name?: string } }).constructor?.name
     : typeof source
   throw new Error(`截图结果不是有效二进制数据，实际类型: ${typeName || 'unknown'}`)
+}
+
+function resolveCardTheme(theme: Partial<CardThemeConfig>) {
+  return {
+    fontFamily: theme.fontFamily || '"Source Han Sans CN", "Microsoft YaHei", "Segoe UI", sans-serif',
+    backgroundColor: theme.backgroundColor || '#1a1c1e',
+    primaryColor: theme.primaryColor || '#00b2ff',
+    warningColor: theme.warningColor || '#ffcf00',
+    dangerColor: theme.dangerColor || '#ff5a66',
+    textColor: theme.textColor || '#e7edf3',
+  }
 }

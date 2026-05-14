@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { CacheManifest, CaptureKind } from '../types'
+import { gzip, gunzip } from 'node:zlib'
+import { promisify } from 'node:util'
+import { CacheMaintenanceConfig, CacheManifest, CaptureKind } from '../types'
+
+const gzipAsync = promisify(gzip)
+const gunzipAsync = promisify(gunzip)
 
 export function getPrtsDayKey(date = new Date(), timezone = 'Asia/Shanghai', refreshHour = 4): string {
   const parts = getZonedParts(date, timezone)
@@ -57,6 +62,10 @@ export class DailyImageCache {
     return getPrtsDayKey(this.nowProvider(), this.timezone, this.refreshHour)
   }
 
+  get rootDirectory() {
+    return this.rootDir
+  }
+
   getImagePath(kind: CaptureKind, dayKey = this.currentDayKey) {
     return path.join(this.rootDir, dayKey, `${kind}.png`)
   }
@@ -69,11 +78,87 @@ export class DailyImageCache {
     return this.exists(this.getImagePath(kind))
   }
 
+  async inspect(kind: CaptureKind = 'daily') {
+    const dayKeys = await this.listDayKeys()
+    const latestDayKey = dayKeys[0] || ''
+    return {
+      baseDir: this.baseDir,
+      cacheRoot: this.rootDir,
+      currentDayKey: this.currentDayKey,
+      todayExists: await this.hasToday(kind),
+      latestDayKey,
+      dayKeys,
+    }
+  }
+
+  async maintain(options: CacheMaintenanceConfig) {
+    const empty = {
+      enabled: options.enabled,
+      keptDayKeys: [] as string[],
+      archivedDayKeys: [] as string[],
+      deletedDayKeys: [] as string[],
+      archiveFiles: [] as string[],
+    }
+    if (!options.enabled) return empty
+
+    const dayKeys = await this.listDayKeys()
+    const keepCount = Math.max(1, options.keepRecentDays)
+    const keptDayKeys = dayKeys.slice(0, keepCount)
+    const staleDayKeys = dayKeys.slice(keepCount)
+    if (!staleDayKeys.length) return { ...empty, keptDayKeys }
+
+    const archiveFiles: string[] = []
+    const archivedDayKeys: string[] = []
+    if (options.archiveEnabled) {
+      const groups = groupByMonth(staleDayKeys)
+      const archiveRoot = path.resolve(this.rootDir, options.archiveDirectory || 'archives')
+      await fs.mkdir(archiveRoot, { recursive: true })
+      for (const [monthKey, keys] of groups) {
+        const archivePath = path.join(archiveRoot, `miyako-intel-cache-${monthKey}.json.gz`)
+        const archive = await this.readArchive(archivePath)
+        archive.updatedAt = this.nowProvider().toISOString()
+        for (const dayKey of keys) {
+          archive.days[dayKey] = await this.readDayArchive(dayKey)
+          archivedDayKeys.push(dayKey)
+        }
+        await fs.writeFile(archivePath, await gzipAsync(Buffer.from(JSON.stringify(archive, null, 2))))
+        archiveFiles.push(archivePath)
+      }
+    }
+
+    const canDelete = options.deleteAfterArchive && (!options.archiveEnabled || archivedDayKeys.length === staleDayKeys.length)
+    const deletedDayKeys: string[] = []
+    if (canDelete) {
+      for (const dayKey of staleDayKeys) {
+        await fs.rm(path.join(this.rootDir, dayKey), { recursive: true, force: true })
+        deletedDayKeys.push(dayKey)
+      }
+    }
+
+    return {
+      enabled: true,
+      keptDayKeys,
+      archivedDayKeys: archivedDayKeys.sort(),
+      deletedDayKeys: deletedDayKeys.sort(),
+      archiveFiles,
+    }
+  }
+
   async readToday(kind: CaptureKind) {
     const dayKey = this.currentDayKey
     const filePath = this.getImagePath(kind, dayKey)
     if (!await this.exists(filePath)) return null
-    return { buffer: await fs.readFile(filePath), stale: false, dayKey, filePath }
+    const manifest = await this.readManifest(kind, dayKey)
+    return {
+      buffer: await fs.readFile(filePath),
+      stale: false,
+      dayKey,
+      filePath,
+      mimeType: manifest?.mimeType,
+      titles: manifest?.titles,
+      sourceUrls: manifest?.sourceUrls,
+      summaryItems: manifest?.summaryItems,
+    }
   }
 
   async write(kind: CaptureKind, buffer: Buffer, manifest: Omit<CacheManifest, 'kind' | 'dayKey' | 'generatedAt'>) {
@@ -90,23 +175,35 @@ export class DailyImageCache {
       ...manifest,
     } satisfies CacheManifest, null, 2))
 
-    return { buffer, stale: false, dayKey, filePath }
+    return {
+      buffer,
+      stale: false,
+      dayKey,
+      filePath,
+      mimeType: manifest.mimeType,
+      titles: manifest.titles,
+      sourceUrls: manifest.sourceUrls,
+      summaryItems: manifest.summaryItems,
+    }
   }
 
   async readLatest(kind: CaptureKind) {
-    if (!await this.exists(this.rootDir)) return null
-
-    const entries = await fs.readdir(this.rootDir, { withFileTypes: true })
-    const dayKeys = entries
-      .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry.name))
-      .map((entry) => entry.name)
-      .sort()
-      .reverse()
+    const dayKeys = await this.listDayKeys()
 
     for (const dayKey of dayKeys) {
       const filePath = this.getImagePath(kind, dayKey)
       if (await this.exists(filePath)) {
-        return { buffer: await fs.readFile(filePath), stale: dayKey !== this.currentDayKey, dayKey, filePath }
+        const manifest = await this.readManifest(kind, dayKey)
+        return {
+          buffer: await fs.readFile(filePath),
+          stale: dayKey !== this.currentDayKey,
+          dayKey,
+          filePath,
+          mimeType: manifest?.mimeType,
+          titles: manifest?.titles,
+          sourceUrls: manifest?.sourceUrls,
+          summaryItems: manifest?.summaryItems,
+        }
       }
     }
 
@@ -125,6 +222,65 @@ export class DailyImageCache {
       return false
     }
   }
+
+  private async readManifest(kind: CaptureKind, dayKey: string) {
+    const filePath = this.getManifestPath(kind, dayKey)
+    try {
+      return JSON.parse(await fs.readFile(filePath, 'utf8')) as CacheManifest
+    } catch {
+      return null
+    }
+  }
+
+  private async listDayKeys() {
+    if (!await this.exists(this.rootDir)) return []
+    const entries = await fs.readdir(this.rootDir, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+      .reverse()
+  }
+
+  private async readDayArchive(dayKey: string) {
+    const dir = path.join(this.rootDir, dayKey)
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    const files: Record<string, { encoding: 'base64'; content: string }> = {}
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const filePath = path.join(dir, entry.name)
+      files[entry.name] = {
+        encoding: 'base64',
+        content: (await fs.readFile(filePath)).toString('base64'),
+      }
+    }
+    return { archivedAt: this.nowProvider().toISOString(), files }
+  }
+
+  private async readArchive(filePath: string): Promise<CacheArchive> {
+    try {
+      return JSON.parse((await gunzipAsync(await fs.readFile(filePath))).toString('utf8')) as CacheArchive
+    } catch {
+      return { version: 1, updatedAt: this.nowProvider().toISOString(), days: {} }
+    }
+  }
+}
+
+interface CacheArchive {
+  version: 1
+  updatedAt: string
+  days: Record<string, { archivedAt: string; files: Record<string, { encoding: 'base64'; content: string }> }>
+}
+
+function groupByMonth(dayKeys: string[]) {
+  const result = new Map<string, string[]>()
+  for (const dayKey of dayKeys) {
+    const monthKey = dayKey.slice(0, 7)
+    const group = result.get(monthKey) || []
+    group.push(dayKey)
+    result.set(monthKey, group)
+  }
+  return result
 }
 
 function pad2(value: number) {
