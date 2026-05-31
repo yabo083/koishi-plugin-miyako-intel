@@ -37,10 +37,6 @@ export interface WarfarinWikiConfig {
   storyDataDirectory: string
   storyUpdateCron: string
   storyUpdateOnStart: boolean
-  storyUpdateRateLimitMs: number
-  storyUpdateBatchSize: number
-  storyRefreshExistingDays: number
-  storyRefreshExistingBatchSize: number
   storyBundleManifestUrl: string
   timeoutMs: number
   userAgent: string

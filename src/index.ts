@@ -143,10 +143,7 @@ export const Config = Schema.intersect([
       storySearchEnabled: Schema.boolean().default(true).description('是否启用剧情/任务全文搜索。'),
       storyUpdateCron: Schema.string().default('20 4 * * *').description('剧情数据自动更新时间。'),
       storyUpdateOnStart: Schema.boolean().default(false).description('插件启动时是否立即更新剧情数据。'),
-      storyUpdateBatchSize: Schema.number().min(1).max(200).default(40).description('每次剧情更新最多新增任务数。'),
-      storyRefreshExistingDays: Schema.number().min(0).max(365).default(14).description('本地剧情条目重新检查间隔天数。'),
-      storyRefreshExistingBatchSize: Schema.number().min(0).max(100).default(5).description('每次最多重查已有任务数。'),
-      storyBundleManifestUrl: Schema.string().default(defaultStoryBundleManifestUrl).description('远程压缩剧情文本合集 manifest 地址。留空则直接按旧方式访问源站增量更新。'),
+      storyBundleManifestUrl: Schema.string().default(defaultStoryBundleManifestUrl).description('远程压缩剧情文本合集 manifest 地址。留空则只使用随包种子和已有本地缓存，不访问 Warfarin 源站。'),
       timeoutMs: Schema.number().min(1000).max(60000).default(10000).description('资料请求超时时间。'),
       searchCacheTtlMs: Schema.number().min(0).max(86400000).default(600000).description('搜索结果缓存时间，单位毫秒。'),
       searchCacheMaxEntries: Schema.number().min(1).max(1000).default(100).description('搜索缓存最大数量。'),
@@ -176,7 +173,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
   const service = new PrtsCaptureService(ctx, resolved, cache, logger)
   const wikiClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.baseUrl, mode: resolved.wiki.mode, language: resolved.wiki.language, userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
   const storyClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.storyBaseUrl, mode: 'story', language: resolved.wiki.storyLanguage, scopes: storyScopes, pageBaseUrl: '', userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
-  const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, rateLimitMs: resolved.wiki.storyUpdateRateLimitMs, timeoutMs: resolved.wiki.timeoutMs, batchSize: resolved.wiki.storyUpdateBatchSize, refreshExistingDays: resolved.wiki.storyRefreshExistingDays, refreshExistingBatchSize: resolved.wiki.storyRefreshExistingBatchSize, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl })
+  const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, timeoutMs: resolved.wiki.timeoutMs, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl })
   const wikiSelections = new Map<string, { expiresAt: number; keyword: string; offset: number; total: number; results: SelectedWikiAnchor[] }>()
   const wikiSearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
   const storySearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
@@ -718,10 +715,6 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
       storyDataDirectory: config.wiki?.storyDataDirectory || 'data/miyako-intel/warfarin-story',
       storyUpdateCron: config.wiki?.storyUpdateCron || '20 4 * * *',
       storyUpdateOnStart: config.wiki?.storyUpdateOnStart ?? false,
-      storyUpdateRateLimitMs: config.wiki?.storyUpdateRateLimitMs ?? 500,
-      storyUpdateBatchSize: config.wiki?.storyUpdateBatchSize ?? 40,
-      storyRefreshExistingDays: config.wiki?.storyRefreshExistingDays ?? 14,
-      storyRefreshExistingBatchSize: config.wiki?.storyRefreshExistingBatchSize ?? 5,
       storyBundleManifestUrl: config.wiki?.storyBundleManifestUrl ?? defaultStoryBundleManifestUrl,
       timeoutMs: config.wiki?.timeoutMs ?? 10000,
       userAgent: config.wiki?.userAgent || defaultUserAgent,

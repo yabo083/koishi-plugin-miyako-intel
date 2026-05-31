@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult } from './warfarin-wiki'
@@ -9,11 +9,7 @@ export interface WarfarinStorySearchOptions {
   baseDir: string
   dataDirectory: string
   language: string
-  rateLimitMs: number
   timeoutMs: number
-  batchSize?: number
-  refreshExistingDays?: number
-  refreshExistingBatchSize?: number
   bundleManifestUrl?: string
   fetch?: (url: string, init?: Record<string, any>) => Promise<any>
 }
@@ -35,11 +31,7 @@ interface StoryAnchor extends WarfarinWikiAnchor {
 export class WarfarinStorySearchService {
   private readonly root: string
   private readonly language: string
-  private readonly rateLimitMs: number
   private readonly timeoutMs: number
-  private readonly batchSize: number
-  private readonly refreshExistingMs: number
-  private readonly refreshExistingBatchSize: number
   private readonly bundleManifestUrl: string
   private readonly fetchImpl: (url: string, init?: Record<string, any>) => Promise<any>
   private anchors: StoryAnchor[] = []
@@ -48,11 +40,7 @@ export class WarfarinStorySearchService {
   constructor(options: WarfarinStorySearchOptions) {
     this.root = isAbsolute(options.dataDirectory) ? options.dataDirectory : resolve(options.baseDir, options.dataDirectory)
     this.language = normalizeLanguage(options.language)
-    this.rateLimitMs = Math.max(0, options.rateLimitMs || 0)
     this.timeoutMs = Math.max(1000, options.timeoutMs || 10000)
-    this.batchSize = Math.max(0, Math.trunc(options.batchSize || 0))
-    this.refreshExistingMs = Math.max(0, Math.trunc(options.refreshExistingDays || 0)) * 86400000
-    this.refreshExistingBatchSize = Math.max(0, Math.trunc(options.refreshExistingBatchSize || 0))
     this.bundleManifestUrl = String(options.bundleManifestUrl || '').trim()
     this.fetchImpl = options.fetch || defaultFetch
   }
@@ -109,52 +97,9 @@ export class WarfarinStorySearchService {
       const report = await this.updateFromBundle().catch(() => undefined)
       if (report) return report
     }
-    const slugs = await this.fetchSlugs()
-    const anchors: StoryAnchor[] = []
-    let failed = 0
-    let skipped = 0
-    let fetched = 0
-    let pending = 0
-    let refreshed = 0
-    await mkdir(this.rawDir(), { recursive: true })
-    await mkdir(this.anchorsDir(), { recursive: true })
-    for (const slug of slugs) {
-      try {
-        const cached = await this.readCachedMission(slug)
-        const cachedAnchor = cached ? null : await this.readCachedAnchor(slug)
-        if (!cached && !cachedAnchor && this.batchSize && fetched >= this.batchSize) {
-          pending++
-          continue
-        }
-        const shouldRefresh = (cached || cachedAnchor) && await this.shouldRefreshStory(slug) && (!this.refreshExistingBatchSize || refreshed < this.refreshExistingBatchSize)
-        if (!cached && cachedAnchor && !shouldRefresh) {
-          anchors.push(cachedAnchor)
-          skipped++
-          continue
-        }
-        const data = cached && !shouldRefresh ? cached : await this.fetchMission(slug)
-        if (cached && !shouldRefresh) skipped++
-        else if (shouldRefresh) {
-          refreshed++
-          await writeFile(join(this.rawDir(), `${slug}.json`), JSON.stringify(data, null, 2))
-        }
-        else {
-          fetched++
-          await writeFile(join(this.rawDir(), `${slug}.json`), JSON.stringify(data, null, 2))
-        }
-        const parsed = parseMission(slug, data)
-        anchors.push(parsed)
-        await writeFile(join(this.anchorsDir(), `${slug}.json`), JSON.stringify(parsed, null, 2))
-      } catch {
-        failed++
-      }
-      if (this.rateLimitMs) await sleep(this.rateLimitMs)
-    }
-    this.anchors = anchors
-    this.loaded = true
     const updatedAt = new Date().toISOString()
-    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, success: anchors.length, failed, skipped, pending, refreshed }, null, 2))
-    return { success: anchors.length, failed, skipped, pending, refreshed, updatedAt }
+    await this.load()
+    return { success: this.anchors.length, failed: 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt }
   }
 
   get size() {
@@ -163,37 +108,6 @@ export class WarfarinStorySearchService {
 
   private async ensureLoaded() {
     if (!this.loaded) await this.load()
-  }
-
-  private async fetchSlugs() {
-    const html = await readText(await this.fetchWithTimeout(`https://warfarin.wiki/${this.language}/missions/`))
-    const slugs = new Set<string>()
-    const regex = new RegExp(`href="/${this.language}/missions/([^"<>]+)"`, 'g')
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(html))) slugs.add(decodeURIComponent(match[1]))
-    return Array.from(slugs)
-  }
-
-  private async fetchMission(slug: string) {
-    const payload = await readJson<any>(await this.fetchWithTimeout(`https://api.warfarin.wiki/v1/${this.language}/missions/${encodeURIComponent(slug)}`))
-    return payload?.data || payload
-  }
-
-  private async readCachedMission(slug: string) {
-    return readFile(join(this.rawDir(), `${slug}.json`), 'utf8').then(JSON.parse).catch(() => null)
-  }
-
-  private async readCachedAnchor(slug: string) {
-    const payload = await readFile(join(this.anchorsDir(), `${slug}.json`), 'utf8').then(JSON.parse).catch(() => null)
-    return isStoryAnchor(payload) ? payload : null
-  }
-
-  private async shouldRefreshStory(slug: string) {
-    if (!this.refreshExistingMs) return false
-    const info = await stat(join(this.rawDir(), `${slug}.json`)).catch(() => null)
-      || await stat(join(this.anchorsDir(), `${slug}.json`)).catch(() => null)
-    if (!info) return false
-    return Date.now() - info.mtimeMs >= this.refreshExistingMs
   }
 
   private async installBundledSeed() {
@@ -257,16 +171,12 @@ export class WarfarinStorySearchService {
     }
   }
 
-  private rawDir() {
-    return join(this.root, this.language, 'raw', 'missions')
-  }
-
   private anchorsDir() {
     return join(this.root, this.language, 'anchors')
   }
 }
 
-function parseMission(slug: string, data: any): StoryAnchor {
+export function createStoryAnchorFromMission(slug: string, data: any): StoryAnchor {
   const texts: string[] = []
   const fullText: WarfarinWikiContextResult['full_text'] = []
   const mission = data?.mission || {}
@@ -344,11 +254,6 @@ async function readJson<T>(response: any): Promise<T> {
   return response as T
 }
 
-async function readText(response: any): Promise<string> {
-  if (response && typeof response.text === 'function') return response.text()
-  return String(response || '')
-}
-
 async function readBuffer(response: any): Promise<Buffer> {
   if (response && typeof response.arrayBuffer === 'function') return Buffer.from(await response.arrayBuffer())
   if (Buffer.isBuffer(response)) return response
@@ -363,8 +268,4 @@ function deriveBundleUrl(manifestUrl: string) {
 async function defaultFetch(url: string, init?: Record<string, any>) {
   if (typeof fetch !== 'function') throw new Error('global fetch is not available')
   return fetch(url, init as RequestInit)
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
