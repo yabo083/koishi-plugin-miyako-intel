@@ -30,17 +30,19 @@ if (process.env.STORY_FORCE_UPDATE !== '1' && previousManifest?.sourceUpdatedAt 
 const slugs = await fetchMissionSlugs(language)
 const anchors = []
 let failed = 0
+const failures = []
 for (const slug of slugs) {
   try {
     const data = await fetchMission(language, slug)
     anchors.push(createStoryAnchorFromMission(slug, data))
-  } catch {
+  } catch (error) {
     failed++
+    if (failures.length < 5) failures.push(`${slug}: ${error instanceof Error ? error.message : String(error)}`)
   }
   if (rateLimitMs) await sleep(rateLimitMs)
 }
 
-if (!anchors.length) throw new Error('No Warfarin story text anchors were generated.')
+if (!anchors.length) throw new Error(`No Warfarin story text anchors were generated. ${failures.join(' | ')}`)
 
 const compressed = gzipSync(JSON.stringify(anchors), { level: 9 })
 const sha256 = createHash('sha256').update(compressed).digest('hex')
@@ -86,6 +88,10 @@ async function fetchMission(lang, slug) {
 }
 
 async function fetchJson(url) {
+  if (process.env.STORY_API_FETCHER !== 'fetch' && String(url).startsWith('https://api.warfarin.wiki/')) {
+    const html = await fetchTextWithChrome(url)
+    return JSON.parse(extractJsonFromDocument(html))
+  }
   const response = await fetchWithTimeout(url)
   return response.json()
 }
@@ -146,6 +152,25 @@ function runChromeDump(bin, url) {
       reject(new Error(`exited ${code}${stderr ? `: ${stderr.trim().slice(0, 300)}` : ''}`))
     })
   })
+}
+
+function extractJsonFromDocument(input) {
+  const text = String(input || '').trim()
+  if (text.startsWith('{') || text.startsWith('[')) return text
+  const pre = text.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
+  const body = pre ? pre[1] : text.replace(/<[^>]*>/g, ' ')
+  return decodeHtml(body).trim()
+}
+
+function decodeHtml(input) {
+  return String(input || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
 }
 
 async function fetchWithTimeout(url) {

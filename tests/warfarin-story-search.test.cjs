@@ -170,7 +170,7 @@ test('story bundle builder sends browser headers to Warfarin HTML pages', () => 
   const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
     cwd: rootDir,
     encoding: 'utf8',
-    env: { ...process.env, MOCK_FETCH_CALLS: callsFile, STORY_HTML_FETCHER: 'fetch', STORY_UPDATE_RATE_LIMIT_MS: '0' },
+    env: { ...process.env, MOCK_FETCH_CALLS: callsFile, STORY_API_FETCHER: 'fetch', STORY_HTML_FETCHER: 'fetch', STORY_UPDATE_RATE_LIMIT_MS: '0' },
   })
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
