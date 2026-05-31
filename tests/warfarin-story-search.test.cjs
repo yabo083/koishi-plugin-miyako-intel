@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict')
+const childProcess = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 const test = require('node:test')
 const zlib = require('node:zlib')
 
@@ -130,6 +132,58 @@ test('built-in story search reports bundle update warning while keeping local te
   assert.match(report.warning, /network down/)
   assert.ok(report.success >= 200)
   assert.equal(search.total, 1)
+})
+
+test('story bundle builder sends browser headers to Warfarin HTML pages', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-'))
+  const outDir = path.join(baseDir, 'out')
+  const callsFile = path.join(baseDir, 'calls.log')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    import { appendFileSync } from 'node:fs'
+    const callsFile = process.env.MOCK_FETCH_CALLS
+    function response(body, contentType = 'application/json') {
+      return {
+        ok: true,
+        status: 200,
+        async json() { return JSON.parse(body) },
+        async text() { return body },
+        headers: new Map([['content-type', contentType]]),
+      }
+    }
+    function jsonResponse(payload) {
+      return response(JSON.stringify(payload))
+    }
+    function htmlResponse(html) {
+      return response(html, 'text/html')
+    }
+    globalThis.fetch = async (url, init = {}) => {
+      appendFileSync(callsFile, JSON.stringify({ url: String(url), headers: init.headers || {} }) + '\\n')
+      if (String(url).endsWith('.manifest.json')) return jsonResponse({ sourceUpdatedAt: '2026-05-13' })
+      if (String(url) === 'https://warfarin.wiki/cn') return htmlResponse('<html><body>最后更新：2026-05-14</body></html>')
+      if (String(url) === 'https://warfarin.wiki/cn/missions/') return htmlResponse('<a href="/cn/missions/c27m5">共饮一江水</a>')
+      if (String(url) === 'https://api.warfarin.wiki/v1/cn/missions/c27m5') return jsonResponse({ data: { mission: { id: 'c27m5', name: '共饮一江水' }, dialog: [{ actorName: '管理员', dialogText: '火锅会让大家暖和起来。' }] } })
+      throw new Error('unexpected fetch: ' + url)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, MOCK_FETCH_CALLS: callsFile, STORY_UPDATE_RATE_LIMIT_MS: '0' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  const calls = fs.readFileSync(callsFile, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line))
+  const homepageCall = calls.find(call => call.url === 'https://warfarin.wiki/cn')
+  const missionListCall = calls.find(call => call.url === 'https://warfarin.wiki/cn/missions/')
+
+  assert.match(homepageCall.headers['User-Agent'], /Mozilla\/5\.0/)
+  assert.match(homepageCall.headers.Accept, /text\/html/)
+  assert.equal(homepageCall.headers['Accept-Language'], 'zh-CN,zh;q=0.9,en;q=0.8')
+  assert.match(missionListCall.headers['User-Agent'], /Mozilla\/5\.0/)
+  assert.ok(fs.existsSync(path.join(outDir, 'warfarin-story-cn.json.gz')))
+  assert.ok(fs.existsSync(path.join(outDir, 'warfarin-story-cn.manifest.json')))
 })
 
 function jsonResponse(payload) {

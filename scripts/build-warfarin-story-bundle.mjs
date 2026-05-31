@@ -83,25 +83,47 @@ async function fetchMission(lang, slug) {
   return payload?.data || payload
 }
 
-async function fetchText(url) {
-  const response = await fetchWithTimeout(url)
-  return response.text()
-}
-
 async function fetchJson(url) {
   const response = await fetchWithTimeout(url)
   return response.json()
+}
+
+async function fetchText(url) {
+  const response = await fetchWithTimeout(url)
+  return response.text()
 }
 
 async function fetchWithTimeout(url) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'miyako-intel-story-bundle' } })
+    const response = await fetch(url, { signal: controller.signal, headers: requestHeaders(url) })
     if (!response.ok) throw new Error(`GET ${url} failed with HTTP ${response.status}`)
     return response
   } finally {
     clearTimeout(timer)
+  }
+}
+
+function requestHeaders(url) {
+  const isPage = String(url).startsWith('https://warfarin.wiki/')
+  if (!isPage) {
+    return {
+      'User-Agent': 'miyako-intel-story-bundle',
+      Accept: 'application/json,text/plain,*/*',
+    }
+  }
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+    Referer: 'https://warfarin.wiki/',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Upgrade-Insecure-Requests': '1',
   }
 }
 
