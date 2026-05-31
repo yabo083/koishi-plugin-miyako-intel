@@ -1106,7 +1106,7 @@ test('scheduled push wraps broadcast content with custom prefix and suffix', asy
 
   apply(ctx, config)
   await intervals[0].callback()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await new Promise((resolve) => setTimeout(resolve, 800))
 
   assert.equal(broadcastCalls.length, 1)
   assert.match(String(broadcastCalls[0].content), /PRTS 今日情报/)
@@ -1183,7 +1183,7 @@ test('scheduled push waits for cron expression minute', async () => {
 
   apply(ctx, config)
   await intervals[0].callback()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await new Promise((resolve) => setTimeout(resolve, 800))
 
   assert.equal(broadcastCalls.length, 0)
   assert.equal(calls.filter((item) => item === 'captureDaily').length, 0)
@@ -1208,6 +1208,50 @@ test('silent log level suppresses routine scheduled push logs', async () => {
 
   apply(ctx, config)
   await intervals[0].callback()
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  assert.equal(loggerLines.length, 0)
+})
+
+test('story bundle update failures are logged by log level', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, loggerLines } = createMockContext({
+    http: async (url) => {
+      throw new Error(`github unreachable: ${url}`)
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    logLevel: 'warn',
+    wiki: {
+      ...defaultConfig.wiki,
+      storyUpdateOnStart: true,
+      storyBundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  assert.equal(loggerLines.some(([level, message]) => level === 'warn' && /GitHub 剧情文本合集/.test(message) && /github unreachable/.test(message)), true)
+})
+
+test('silent log level suppresses story bundle update warnings', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, loggerLines } = createMockContext({
+    http: async (url) => {
+      throw new Error(`github unreachable: ${url}`)
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    logLevel: 'silent',
+    wiki: {
+      ...defaultConfig.wiki,
+      storyUpdateOnStart: true,
+      storyBundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    },
+  })
   await new Promise((resolve) => setTimeout(resolve, 20))
 
   assert.equal(loggerLines.length, 0)

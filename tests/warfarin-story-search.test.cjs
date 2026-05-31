@@ -109,6 +109,29 @@ test('built-in story search updates from remote compressed story text bundle', a
   assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'c27m5.json')), true)
 })
 
+test('built-in story search reports bundle update warning while keeping local text', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-bundle-warning-'))
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    fetch: async (url) => {
+      throw new Error(`network down: ${url}`)
+    },
+  })
+
+  const report = await service.update()
+  const search = await service.search({ keyword: '共饮一江水' })
+
+  assert.equal(report.failed, 1)
+  assert.match(report.warning, /network down/)
+  assert.ok(report.success >= 200)
+  assert.equal(search.total, 1)
+})
+
 function jsonResponse(payload) {
   return {
     ok: true,

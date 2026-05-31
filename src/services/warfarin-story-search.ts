@@ -21,6 +21,7 @@ export interface WarfarinStoryUpdateReport {
   pending: number
   refreshed: number
   updatedAt: string
+  warning?: string
 }
 
 interface StoryAnchor extends WarfarinWikiAnchor {
@@ -93,13 +94,17 @@ export class WarfarinStorySearchService {
   }
 
   async update(): Promise<WarfarinStoryUpdateReport> {
+    let warning = ''
     if (this.bundleManifestUrl) {
-      const report = await this.updateFromBundle().catch(() => undefined)
+      const report = await this.updateFromBundle().catch((error) => {
+        warning = formatUpdateWarning(error)
+        return undefined
+      })
       if (report) return report
     }
     const updatedAt = new Date().toISOString()
     await this.load()
-    return { success: this.anchors.length, failed: 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt }
+    return { success: this.anchors.length, failed: warning ? 1 : 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt, warning: warning || undefined }
   }
 
   get size() {
@@ -263,6 +268,11 @@ async function readBuffer(response: any): Promise<Buffer> {
 
 function deriveBundleUrl(manifestUrl: string) {
   return manifestUrl.endsWith('.manifest.json') ? manifestUrl.slice(0, -'.manifest.json'.length) + '.json.gz' : ''
+}
+
+function formatUpdateWarning(error: unknown) {
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 async function defaultFetch(url: string, init?: Record<string, any>) {

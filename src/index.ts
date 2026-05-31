@@ -173,7 +173,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
   const service = new PrtsCaptureService(ctx, resolved, cache, logger)
   const wikiClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.baseUrl, mode: resolved.wiki.mode, language: resolved.wiki.language, userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
   const storyClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.storyBaseUrl, mode: 'story', language: resolved.wiki.storyLanguage, scopes: storyScopes, pageBaseUrl: '', userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
-  const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, timeoutMs: resolved.wiki.timeoutMs, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl })
+  const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, timeoutMs: resolved.wiki.timeoutMs, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
   const wikiSelections = new Map<string, { expiresAt: number; keyword: string; offset: number; total: number; results: SelectedWikiAnchor[] }>()
   const wikiSearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
   const storySearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
@@ -566,6 +566,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     storyUpdating = true
     try {
       const report = await storySearch.update()
+      if (report.warning) logger.warn(`Warfarin GitHub 剧情文本合集${reason}异常，继续使用本地缓存：${report.warning}`)
       logger.info(`Warfarin 剧情文本${reason}完成：成功 ${report.success}，跳过 ${report.skipped}，重查 ${report.refreshed}，待补 ${report.pending}，失败 ${report.failed}。`)
       return true
     } catch (error) {
@@ -787,7 +788,7 @@ function formatSearchCacheStatus(ttlMs: number, entries: number, maxEntries: num
 
 function createKoishiHttpFetch(http: any, timeoutMs: number) {
   if (!http) return undefined
-  return async (url: string, init: Record<string, any>) => {
+  return async (url: string, init: Record<string, any> = {}) => {
     const options: Record<string, any> = {
       method: init.method,
       headers: init.headers,
