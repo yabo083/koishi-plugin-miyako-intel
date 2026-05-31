@@ -32,6 +32,7 @@ function createMockContext(options = {}) {
   const registeredCommands = []
   const commandHandlers = new Map()
   const intervals = []
+  const middlewares = []
   const sent = []
   const broadcastCalls = []
   const loggerLines = []
@@ -62,11 +63,18 @@ function createMockContext(options = {}) {
       intervals.push({ callback, ms })
       return () => undefined
     },
+    middleware(callback) {
+      middlewares.push(callback)
+      return () => undefined
+    },
+    http: options.http,
     on() { return () => undefined },
   }
 
   function createSession() {
     return {
+      userId: 'user-1',
+      channelId: 'channel-1',
       sent,
       async send(message) {
         sent.push(message)
@@ -74,7 +82,7 @@ function createMockContext(options = {}) {
     }
   }
 
-  return { ctx, registeredCommands, commandHandlers, intervals, sent, loggerLines, broadcastCalls, createSession }
+  return { ctx, registeredCommands, commandHandlers, intervals, middlewares, sent, loggerLines, broadcastCalls, createSession }
 }
 
 const defaultConfig = {
@@ -138,6 +146,19 @@ const defaultConfig = {
     minute: 10,
     cron: '10 4 * * *',
   },
+  wiki: {
+    mode: 'official',
+    baseUrl: 'https://api.warfarin.wiki/v1',
+    language: 'cn',
+    storyBaseUrl: 'http://story.example/api/v1',
+    storyLanguage: 'cn',
+    timeoutMs: 5000,
+    userAgent: 'TestAgent/1.0',
+    searchCacheTtlMs: 600000,
+    searchCacheMaxEntries: 100,
+    pageSize: 5,
+    selectionTtlMs: 300000,
+  },
   now: '2026-04-29T02:00:00.000+08:00',
 }
 
@@ -162,6 +183,17 @@ test('config guide stays compact and shows onebot channel example', () => {
   assert.match(usage, /prts d/)
   assert.match(usage, /分钟 小时 日期 月份 星期/)
   assert.doesNotMatch(json, /summaryFeaturedOperatorCategories/)
+  assert.doesNotMatch(json, /storyScopes/)
+  assert.doesNotMatch(json, /searchLimit/)
+  assert.doesNotMatch(json, /enableSummary/)
+  assert.doesNotMatch(json, /defaultContextRange/)
+  assert.doesNotMatch(json, /Warfarin Wiki 数据源模式/)
+  assert.doesNotMatch(json, /Warfarin Wiki API 根地址/)
+  assert.doesNotMatch(json, /剧情\/任务全文搜索后端根地址/)
+  assert.doesNotMatch(json, /User-Agent/)
+  assert.match(json, /Warfarin 资料检索/)
+  assert.match(json, /基础设置/)
+  assert.match(json, /PRTS 今日情报/)
 })
 
 test('registers only the daily Koishi dot command', async () => {
@@ -172,17 +204,510 @@ test('registers only the daily Koishi dot command', async () => {
 
   apply(ctx, defaultConfig)
 
-  assert.deepEqual(registeredCommands, ['prts'])
+  assert.deepEqual(registeredCommands, ['prts', 'w <input:text>', 'w+', 'w+<page:number>', 'w-'])
 
   const handler = commandHandlers.get('prts.d')
   assert.equal(typeof handler, 'function')
   assert.equal(commandHandlers.has('prts.e'), false)
+  assert.equal(commandHandlers.has('w <input:text>'), true)
+  assert.equal(commandHandlers.has('w+'), true)
+  assert.equal(commandHandlers.has('w+<page:number>'), true)
+  assert.equal(commandHandlers.has('w-'), true)
+  assert.equal(commandHandlers.has('wq <input:text>'), false)
+  assert.equal(commandHandlers.has('wq+'), false)
+  assert.equal(commandHandlers.has('wq-'), false)
 
   const text = await handler({ session: createSession() })
 
   assert.deepEqual(calls.filter((item) => item === 'captureDaily'), ['captureDaily'])
   assert.equal(sent.filter((item) => String(item).includes('base64')).length, 1)
   assert.match(text, /已发送/)
+})
+
+test('warfarin wiki w command searches official source, pages, and fetches context', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('story.example')) {
+        return { query: '息壤', total: 0, results: [] }
+      }
+      if (url.includes('/search?q=')) {
+        return {
+          query: '息壤',
+          results: Array.from({ length: 7 }, (_, index) => ({
+            slug: `text_${index + 1}`,
+            name: `息壤资料${index + 1}`,
+            type: 'lore',
+            category: '见闻辑录',
+            snippet: `第 ${index + 1} 条息壤相关资料。`,
+            score: 10 - index,
+          })),
+        }
+      }
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          anchor: { anchor_id: 'text_6_0', content: '第 6 条息壤相关资料。', source: '见闻辑录：息壤资料6', scope: 'lore', relevance: 5 },
+          full_text: [
+            { speaker: '佩丽卡', text: '那是什么？' },
+            { speaker: '', text: '第 6 条息壤相关资料。' },
+          ],
+          summary: null,
+          source_ref: '见闻辑录：息壤资料6',
+        },
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const next = commandHandlers.get('w+')
+  const jump = commandHandlers.get('w+<page:number>')
+  const previous = commandHandlers.get('w-')
+  assert.equal(typeof search, 'function')
+  assert.equal(typeof next, 'function')
+  assert.equal(typeof jump, 'function')
+  assert.equal(typeof previous, 'function')
+
+  const session = createSession()
+  const searchText = await search({ session, options: {} }, ' 息壤 ')
+  const pageText = await next({ session })
+  const repeatedNextText = await next({ session })
+  const previousText = await previous({ session })
+  const jumpedText = await jump({ session }, 2)
+  const contextText = await search({ session, options: {} }, '6')
+
+  assert.match(searchText, /Warfarin Wiki 检索：息壤/)
+  assert.match(searchText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\] \| 输入 w 序号 查看，w\+ 下一页，w- 上一页，w\+页码 跳页。/)
+  assert.doesNotMatch(searchText, /息壤资料6/)
+  assert.match(pageText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
+  assert.match(repeatedNextText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
+  assert.match(previousText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
+  assert.match(jumpedText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
+  assert.match(contextText, /名称：息壤资料6 \| 类型：见闻辑录 \| 来源：Warfarin Wiki/)
+  assert.match(contextText, /第 6 条息壤相关资料。/)
+  assert.equal(sent.length, 0)
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
+  assert.equal(requests.length, 2)
+})
+
+test('warfarin wiki supports compact w+page jump input', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession, middlewares, sent } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return {
+        query: '息壤',
+        results: Array.from({ length: 12 }, (_, index) => ({
+          slug: `text_${index + 1}`,
+          name: `息壤资料${index + 1}`,
+          type: 'lore',
+          category: '见闻辑录',
+          snippet: `第 ${index + 1} 条息壤相关资料。`,
+          score: 20 - index,
+        })),
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  await search({ session, options: {} }, '息壤')
+  session.content = 'w+3'
+  session.stripped = { content: 'w+3' }
+
+  assert.equal(middlewares.length, 1)
+  const result = await middlewares[0](session, () => 'next')
+
+  assert.equal(result, undefined)
+  assert.equal(sent.length, 1)
+  assert.match(String(sent[0]), /Warfarin Wiki 检索：息壤 \| 共 12 条，可用页码 \[1-3\]/)
+  assert.match(String(sent[0]), /11\. 见闻辑录：息壤资料11/)
+  assert.equal(requests.length, 2)
+})
+
+test('warfarin wiki empty search clears previous numbered anchors', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      const body = init.data
+      requests.push({ url, body })
+      if (url.includes('/search?q=%E6%81%AF%E5%A3%A4')) {
+        return {
+          query: '息壤',
+          results: [
+            { slug: 'plot_001', name: '息壤', type: 'lore', category: '剧情-序章', snippet: '息壤来自塔卫二。', score: 9 },
+          ],
+        }
+      }
+      return { query: '不存在的词条', results: [] }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+
+  await search({ session, options: {} }, '息壤')
+  await search({ session, options: {} }, '不存在的词条')
+  const text = await search({ session, options: {} }, '1')
+
+  assert.match(text, /请先使用 w 关键词/)
+  assert.equal(requests.some((item) => item.url.endsWith('/api/v1/search/context')), false)
+})
+
+test('warfarin wiki official detail uses local snippet without context request', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      return {
+        query: '息壤',
+        results: [
+          { slug: 'text_v0d8_24', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤是一种用于遏制侵蚀的新材料。', score: 56 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      mode: 'official',
+      baseUrl: 'https://api.warfarin.wiki/v1',
+      pageSize: undefined,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  await search({ session, options: {} }, '息壤')
+  const detail = await search({ session, options: {} }, '1')
+
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
+  assert.equal(requests[0].body, undefined)
+  assert.equal(requests.length, 1)
+  assert.equal(requests.some((item) => item.url.endsWith('/search/context')), false)
+  assert.match(detail, /名称：息壤 \| 类型：中枢档案 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /https:\/\/warfarin\.wiki\/cn\/lore\/text_v0d8_24/)
+})
+
+test('warfarin wiki caches repeated keyword searches and supports keyword number shortcut', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      return {
+        query: '息壤',
+        results: [
+          { slug: 'text_v0d8_24', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤是一种用于遏制侵蚀的新材料。', score: 56 },
+          { slug: 'item_xiranite_powder', name: '息壤', type: 'items', category: '材料', snippet: '将源石与巨兽力量结合于一处后诞生出的新型源石材料。', score: 39 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const sessionA = createSession()
+  const sessionB = createSession()
+  sessionB.userId = 'user-2'
+
+  await search({ session: sessionA, options: {} }, '息壤')
+  await search({ session: sessionB, options: {} }, '息壤')
+  const shortcut = await search({ session: sessionB, options: {} }, '息壤 2')
+
+  assert.equal(requests.length, 2)
+  assert.match(shortcut, /名称：息壤 \| 类型：材料 \| 来源：Warfarin Wiki/)
+  assert.match(shortcut, /新型源石材料/)
+  assert.match(shortcut, /https:\/\/warfarin\.wiki\/cn\/items\/item_xiranite_powder/)
+})
+
+test('warfarin wiki official link follows configured language', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      return {
+        query: 'xiran',
+        results: [
+          { slug: 'item_xiranite_powder', name: 'Xiran', type: 'items', category: 'Material', snippet: 'A material.', score: 39 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      baseUrl: 'https://api.warfarin.wiki/v1/cn',
+      language: 'en',
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  await search({ session, options: {} }, 'xiran')
+  const detail = await search({ session, options: {} }, '1')
+
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/en/search?q=xiran')
+  assert.match(detail, /https:\/\/warfarin\.wiki\/en\/items\/item_xiranite_powder/)
+})
+
+test('warfarin wiki command falls back to story backend without new user command', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('api.warfarin.wiki')) {
+        return { query: '再引春来', results: [] }
+      }
+      if (url.includes('/search?q=')) {
+        return {
+          query: '再引春来',
+          total: 3,
+          results: [
+            { slug: 'sm2l5m2_0', name: '再引春来·其二', type: 'missions', category: '任务剧情', snippet: '再引春来·其二 丙型天师桩出现了异状。', score: 100 },
+          ],
+        }
+      }
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          anchor: { anchor_id: 'sm2l5m2_0', content: '再引春来·其二\n丙型天师桩出现了异状。管理员一行人决定前往测试区。', source: '任务剧情：再引春来·其二', scope: 'missions', relevance: 1 },
+          full_text: [],
+          summary: null,
+          source_ref: '任务剧情：再引春来·其二',
+          page: 1,
+          page_size: 1800,
+          total_pages: 1,
+        },
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  const searchText = await search({ session, options: {} }, '再引春来')
+  const detail = await search({ session, options: {} }, '1')
+
+  assert.match(searchText, /Warfarin Wiki 检索：再引春来/)
+  assert.doesNotMatch(searchText, /信息源：/)
+  assert.match(searchText, /任务剧情：再引春来·其二/)
+  assert.doesNotMatch(searchText, /sm2l5m2，第 2 个任务/)
+  assert.match(searchText, /输入 w 序号 查看，w\+ 下一页/)
+  assert.match(detail, /名称：再引春来·其二 \| 类型：任务剧情 \| 任务编号：sm2l5m2 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /丙型天师桩出现了异状/)
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E5%86%8D%E5%BC%95%E6%98%A5%E6%9D%A5')
+  assert.equal(requests[1].url, 'http://story.example/api/v1/cn/search?q=%E5%86%8D%E5%BC%95%E6%98%A5%E6%9D%A5&scope=missions')
+  assert.equal(requests[2].url, 'http://story.example/api/v1/search/context')
+  assert.equal(requests[2].body.anchor_id, 'sm2l5m2_0')
+  assert.equal(requests[2].body.need_summary, false)
+  assert.equal(requests[2].body.context_range, 3)
+})
+
+test('warfarin wiki command merges official and story results for one search experience', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('api.warfarin.wiki')) {
+        return {
+          query: '火锅',
+          results: [
+            { slug: 'text_hotpot', name: '清点者的日记', type: 'lore', category: '纸质记录', snippet: '这一次抢到的东西如下：火锅底料四十。', score: 20 },
+          ],
+        }
+      }
+      if (url.includes('/search?q=')) {
+        return {
+          query: '火锅',
+          total: 1,
+          results: [
+            { slug: 'e10m4_0', name: '志同道合', type: 'missions', category: '任务剧情', snippet: '回忆中的师姐：有没有火锅炸串冒菜汉堡冰激凌啊？', score: 50 },
+          ],
+        }
+      }
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          anchor: { anchor_id: 'e10m4_0', content: '火锅剧情。', source: '任务剧情：志同道合', scope: 'missions', relevance: 50 },
+          full_text: [
+            { speaker: '回忆中的师姐{e10m4-回忆中的师姐}', text: '对了，你这城里......有没有火锅炸串冒菜汉堡冰激凌啊？' },
+          ],
+          summary: null,
+          source_ref: '任务剧情：志同道合',
+        },
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  const searchText = await search({ session, options: {} }, '火锅')
+  const detail = await search({ session, options: {} }, '2')
+
+  assert.match(searchText, /1\. 纸质记录：清点者的日记/)
+  assert.match(searchText, /2\. 任务剧情：志同道合/)
+  assert.doesNotMatch(searchText, /e10m4，第 4 个任务/)
+  assert.doesNotMatch(searchText, /信息源：/)
+  assert.match(detail, /名称：志同道合 \| 类型：任务剧情 \| 任务编号：e10m4 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /回忆中的师姐：对了，你这城里/)
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E7%81%AB%E9%94%85')
+  assert.equal(requests[1].url, 'http://story.example/api/v1/cn/search?q=%E7%81%AB%E9%94%85&scope=missions')
+  assert.equal(requests[2].url, 'http://story.example/api/v1/search/context')
+  assert.equal(requests[2].body.anchor_id, 'e10m4_0')
+})
+
+test('warfarin wiki command uses built-in local story index before remote story service', async () => {
+  const { apply } = loadPlugin()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-local-story-'))
+  const anchorsDir = path.join(baseDir, 'data', 'miyako-intel', 'warfarin-story', 'cn', 'anchors')
+  fs.mkdirSync(anchorsDir, { recursive: true })
+  fs.writeFileSync(path.join(anchorsDir, 'c27m5.json'), JSON.stringify({
+    anchor_id: 'c27m5_0',
+    content: '管理员：火锅会让大家暖和起来。',
+    source: '任务剧情：共饮一江水',
+    source_ref: '任务剧情：共饮一江水',
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: '火锅会让大家暖和起来。' }],
+  }))
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    baseDir,
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('api.warfarin.wiki')) return { query: '火锅', results: [] }
+      throw new Error(`remote story should not be called: ${url}`)
+    },
+  })
+
+  apply(ctx, defaultConfig)
+
+  const search = commandHandlers.get('w <input:text>')
+  const session = createSession()
+  const searchText = await search({ session, options: {} }, '火锅')
+  const detail = await search({ session, options: {} }, '1')
+
+  assert.match(searchText, /任务剧情：共饮一江水/)
+  assert.match(detail, /名称：共饮一江水 \| 类型：任务剧情 \| 任务编号：c27m5 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /管理员：火锅会让大家暖和起来。/)
+  assert.equal(requests.length, 1)
+})
+
+test('warfarin wiki keyword number shortcut works after story fallback', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url, init) => {
+      requests.push({ url, body: init.data })
+      if (url.includes('api.warfarin.wiki')) return { query: '陆令香', results: [] }
+      if (url.includes('/search?q=')) {
+        return {
+          query: '陆令香',
+          total: 5,
+          results: Array.from({ length: 5 }, (_, index) => ({
+            slug: `story_${index + 1}`,
+            name: `再引春来·其${index + 1}`,
+            type: 'missions',
+            category: '任务剧情',
+            snippet: `陆令香相关剧情 ${index + 1}`,
+            score: 100 - index,
+          })),
+        }
+      }
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          anchor: { anchor_id: 'story_5', content: '不应优先展示纯文本 fallback', source: '任务剧情：再引春来·其五', scope: 'missions', relevance: 1 },
+          full_text: [
+            { speaker: '陆令香', text: '我、我无论如何都不能置身事外。' },
+          ],
+          summary: null,
+          source_ref: '任务剧情：再引春来·其五',
+        },
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const detail = await search({ session: createSession(), options: {} }, '陆令香 5')
+
+  assert.match(detail, /名称：再引春来·其五 \| 类型：任务剧情 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /陆令香：我、我无论如何都不能置身事外。/)
+  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E9%99%86%E4%BB%A4%E9%A6%99')
+  assert.equal(requests[1].url, 'http://story.example/api/v1/cn/search?q=%E9%99%86%E4%BB%A4%E9%A6%99&scope=missions')
+  assert.equal(requests[2].body.anchor_id, 'story_5')
 })
 
 test('summary command sends reusable daily text without image capture duplication', async () => {
@@ -688,21 +1213,49 @@ test('silent log level suppresses routine scheduled push logs', async () => {
   assert.equal(loggerLines.length, 0)
 })
 
-test('registers console client entry when console service is available', () => {
+test('registers console client entry and status listener when console service is available', async () => {
   const { apply } = loadPlugin()
   const entries = []
-  const { ctx } = createMockContext()
+  const listeners = new Map()
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url) => {
+      if (String(url).includes('/search?q=')) {
+        return {
+          query: '息壤',
+          results: [
+            { slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤资料。', score: 1 },
+          ],
+        }
+      }
+      return { ok: true }
+    },
+  })
   ctx.console = {
     addEntry(entry) {
       entries.push(entry)
     },
+    addListener(name, listener) {
+      listeners.set(name, listener)
+    },
   }
 
   apply(ctx, defaultConfig)
+  const search = commandHandlers.get('w <input:text>')
+  await search({ session: createSession(), options: {} }, '息壤')
+  await search({ session: createSession(), options: {} }, '画卷通道')
+  const status = await listeners.get('miyako-intel/status')()
 
   assert.equal(entries.length, 1)
   assert.match(entries[0].dev, /client[\\/]index\.ts$/)
   assert.match(entries[0].prod, /dist$/)
+  assert.equal(status.push.enabled, false)
+  assert.equal(status.sites.prts, '可用')
+  assert.equal(status.sites.warfarin, '可用')
+  assert.equal(status.sites.story, '本地 221 条')
+  assert.equal(status.cache.refreshCron, '5 4 * * *')
+  assert.equal(status.cache.searchLabel, '4/100，10 分钟')
+  assert.equal(status.cache.maintenanceCron, '30 4 * * *')
+  assert.equal(status.cache.searchMaxEntries, 100)
 })
 
 function createFailingPuppeteer() {

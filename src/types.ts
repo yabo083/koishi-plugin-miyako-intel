@@ -23,8 +23,34 @@ export interface Config {
   cardTheme: CardThemeConfig
   cacheMaintenance: CacheMaintenanceConfig
   scheduledPush: ScheduledPushConfig
+  wiki: WarfarinWikiConfig
   now?: string
 }
+
+export interface WarfarinWikiConfig {
+  mode: WarfarinWikiMode
+  baseUrl: string
+  language: string
+  storyBaseUrl: string
+  storyLanguage: string
+  storySearchEnabled: boolean
+  storyDataDirectory: string
+  storyUpdateCron: string
+  storyUpdateOnStart: boolean
+  storyUpdateRateLimitMs: number
+  storyUpdateBatchSize: number
+  storyRefreshExistingDays: number
+  storyRefreshExistingBatchSize: number
+  storyBundleManifestUrl: string
+  timeoutMs: number
+  userAgent: string
+  searchCacheTtlMs: number
+  searchCacheMaxEntries: number
+  pageSize: number
+  selectionTtlMs: number
+}
+
+export type WarfarinWikiMode = 'official' | 'anchor'
 
 export interface ScheduledPushConfig {
   enabled: boolean

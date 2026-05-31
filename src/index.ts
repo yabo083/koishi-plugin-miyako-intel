@@ -4,6 +4,8 @@ import { Config as RuntimeConfig, SummaryDisplayItemConfig, SummaryDisplayItemKe
 import { DailyImageCache, getPrtsDayKey, getZonedParts } from './services/cache'
 import { PrtsCaptureService } from './services/capture'
 import { matchesCronExpression } from './services/cron'
+import { WarfarinWikiAnchor, WarfarinWikiApiError, WarfarinWikiClient, defaultUserAgent, formatWikiContext, formatWikiSearchResults } from './services/warfarin-wiki'
+import { WarfarinStorySearchService } from './services/warfarin-story-search'
 
 export { getPrtsDayKey }
 export type { Config as ArknightsIntelConfig } from './types'
@@ -17,6 +19,7 @@ export const usage = `
   <li><code>prts d</code> 发送首页「今日信息」整合图。</li>
   <li><code>prts s</code> 发送首页「今日信息」规则摘要文本。</li>
   <li><code>prts cache</code> 查看缓存诊断与维护状态。</li>
+  <li><code>w 息壤</code> 检索 Warfarin Wiki；<code>w 1</code> 查看结果，<code>w+</code> 翻页，<code>w+2</code> 跳页。</li>
   <li><code>prts r d</code> 强制刷新今日截图缓存；<code>prts r s</code> 强制刷新并发送今日摘要。</li>
   <li><code>prts h</code> 查看命令帮助。</li>
 </ul>
@@ -28,6 +31,11 @@ const cronDescription = [
   'cron 格式：`分钟 小时 日期 月份 星期`，按 `timezone` 生效。',
   '例：`5 4 * * *` = 每天 04:05；`*/30 * * * *` = 每 30 分钟一次。',
 ].join('\n')
+
+const storyScopes = ['missions']
+const defaultStoryBundleManifestUrl = 'https://github.com/yabo083/koishi-plugin-miyako-intel/releases/download/warfarin-story-latest/warfarin-story-cn.manifest.json'
+type WikiSearchSource = 'wiki' | 'story'
+type SelectedWikiAnchor = WarfarinWikiAnchor & { sourceKind?: WikiSearchSource }
 
 const summaryDisplayItemsDefault = [
   { key: 'resource', enabled: true },
@@ -65,7 +73,7 @@ const summaryDisplayItemSchema = Schema.union([
   Schema.const('recent-other').description('其他近期新增。'),
 ])
 
-export const Config: Schema<RuntimeConfig> = Schema.intersect([
+export const Config = Schema.intersect([
   Schema.object({
     baseUrl: Schema.string().default('https://prts.wiki').description('PRTS Wiki 根地址。'),
     homepagePath: Schema.string().default('/w/%E9%A6%96%E9%A1%B5').description('PRTS 首页路径。'),
@@ -79,7 +87,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
       Schema.const('info').description('信息：输出加载、定时刷新、定时推送结果。'),
       Schema.const('debug').description('调试：额外输出定时任务跳过原因。'),
     ]).role('radio').default('info').description('插件日志等级。'),
-  }).description('缓存与站点'),
+  }).description('基础设置'),
   Schema.object({
     navigationTimeoutMs: Schema.number().min(5000).max(120000).default(45000).description('页面导航和关键元素等待超时。'),
     renderDelayMs: Schema.number().min(0).max(10000).default(1000).description('图片加载完成后的额外等待时间。'),
@@ -93,7 +101,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
     jpegQuality: Schema.number().min(50).max(100).default(85).description('JPEG 输出质量，仅在 imageFormat 为 jpeg 或图片过大自动降级时生效。'),
     staleFallback: Schema.boolean().default(true).description('刷新失败时是否回退发送上一份缓存。'),
     now: Schema.string().default('').description('测试用时间覆盖；生产环境保持为空。'),
-  }).description('截图'),
+  }).description('PRTS 今日情报'),
   Schema.object({
     messagePrefix: Schema.string().default('').role('textarea').description('发送图片或摘要前的自定义开场白，留空则不发送。'),
     messageSuffix: Schema.string().default('').role('textarea').description('发送图片或摘要后的自定义结束语，留空则不发送。'),
@@ -103,7 +111,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
       key: summaryDisplayItemSchema.required().description('文本类别。'),
       enabled: Schema.boolean().default(true).description('是否在摘要中展示。'),
     })).role('table').default(summaryDisplayItemsDefault.map((item) => ({ ...item }))).description('摘要文本展示项。默认隐藏近期新增关卡；可在表格中自由开关每一类文本。'),
-  }).description('输出文本'),
+  }).description('消息输出'),
   Schema.object({
     cardTheme: Schema.object({
       fontFamily: Schema.string().default('').description('截图卡片字体栈；留空使用默认中文无衬线字体。'),
@@ -113,7 +121,7 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
       dangerColor: Schema.string().default('').description('危险/紧急色；留空使用默认红色。'),
       textColor: Schema.string().default('').description('正文文字色；留空使用默认浅灰。'),
     }).description('卡片主题'),
-  }).description('视觉主题'),
+  }).description('外观'),
   Schema.object({
     scheduledPush: Schema.object({
       enabled: Schema.boolean().default(false).description('是否启用后台定时推送。'),
@@ -129,7 +137,24 @@ export const Config: Schema<RuntimeConfig> = Schema.intersect([
       deleteAfterArchive: Schema.boolean().default(true).description('归档成功后是否删除原日期目录。'),
     }).description('缓存维护'),
   }).description('定时任务'),
-])
+  Schema.object({
+    wiki: Schema.object({
+      language: Schema.string().default('cn').description('资料语言。'),
+      storySearchEnabled: Schema.boolean().default(true).description('是否启用剧情/任务全文搜索。'),
+      storyUpdateCron: Schema.string().default('20 4 * * *').description('剧情数据自动更新时间。'),
+      storyUpdateOnStart: Schema.boolean().default(false).description('插件启动时是否立即更新剧情数据。'),
+      storyUpdateBatchSize: Schema.number().min(1).max(200).default(40).description('每次剧情更新最多新增任务数。'),
+      storyRefreshExistingDays: Schema.number().min(0).max(365).default(14).description('本地剧情条目重新检查间隔天数。'),
+      storyRefreshExistingBatchSize: Schema.number().min(0).max(100).default(5).description('每次最多重查已有任务数。'),
+      storyBundleManifestUrl: Schema.string().default(defaultStoryBundleManifestUrl).description('远程压缩剧情文本合集 manifest 地址。留空则直接按旧方式访问源站增量更新。'),
+      timeoutMs: Schema.number().min(1000).max(60000).default(10000).description('资料请求超时时间。'),
+      searchCacheTtlMs: Schema.number().min(0).max(86400000).default(600000).description('搜索结果缓存时间，单位毫秒。'),
+      searchCacheMaxEntries: Schema.number().min(1).max(1000).default(100).description('搜索缓存最大数量。'),
+      pageSize: Schema.number().min(1).max(10).default(5).description('每页显示结果数。'),
+      selectionTtlMs: Schema.number().min(30000).max(3600000).default(300000).description('编号选择保留时间，单位毫秒。'),
+    }).description('Warfarin 资料检索'),
+  }).description('Warfarin 资料检索'),
+]) as Schema<RuntimeConfig>
 
 declare module 'koishi' {
   interface Context {
@@ -138,6 +163,7 @@ declare module 'koishi' {
     }
     console?: {
       addEntry: (entry: { dev: string; prod: string }) => void
+      addListener?: (name: string, listener: (...args: any[]) => any) => void
     }
   }
 }
@@ -148,14 +174,27 @@ export function apply(ctx: Context, config: RuntimeConfig) {
   const nowProvider = () => resolved.now ? new Date(resolved.now) : new Date()
   const cache = new DailyImageCache(ctx.baseDir, resolved.cacheDirectory, resolved.timezone, resolved.dailyRefreshHour, nowProvider)
   const service = new PrtsCaptureService(ctx, resolved, cache, logger)
+  const wikiClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.baseUrl, mode: resolved.wiki.mode, language: resolved.wiki.language, userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
+  const storyClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.storyBaseUrl, mode: 'story', language: resolved.wiki.storyLanguage, scopes: storyScopes, pageBaseUrl: '', userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
+  const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, rateLimitMs: resolved.wiki.storyUpdateRateLimitMs, timeoutMs: resolved.wiki.timeoutMs, batchSize: resolved.wiki.storyUpdateBatchSize, refreshExistingDays: resolved.wiki.storyRefreshExistingDays, refreshExistingBatchSize: resolved.wiki.storyRefreshExistingBatchSize, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl })
+  const wikiSelections = new Map<string, { expiresAt: number; keyword: string; offset: number; total: number; results: SelectedWikiAnchor[] }>()
+  const wikiSearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
+  const storySearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
   let lastPushedDayKey = ''
   let lastMaintainedDayKey = ''
+  let lastStoryUpdatedDayKey = ''
   let backgroundRunning = false
+  let storyUpdating = false
 
   ctx.console?.addEntry({
     dev: resolve(__dirname, '../client/index.ts'),
     prod: resolve(__dirname, '../dist'),
   })
+  ctx.console?.addListener?.('miyako-intel/status', buildConsoleStatus)
+  if (resolved.wiki.storySearchEnabled) {
+    storySearch.load().catch((error) => logger.warn(`加载本地剧情文本失败：${formatError(error)}`))
+    if (resolved.wiki.storyUpdateOnStart) runStoryUpdate('启动更新')
+  }
 
   const sendDaily = async (session: any, force = false) => {
     if (!session) return '只能在会话中使用该命令。'
@@ -206,6 +245,34 @@ export function apply(ctx: Context, config: RuntimeConfig) {
   root.subcommand('.cache', '查看 PRTS 缓存诊断')
     .action(() => buildCacheDiagnostics())
 
+  ctx.command('w <input:text>', '检索 Warfarin Wiki 终末地资料')
+    .action(async ({ session }, input?: string) => handleWikiInput(session, input || ''))
+
+  ctx.command('w+', '显示下一页 Warfarin Wiki 检索结果')
+    .action(async ({ session }) => pageWiki(session, 1))
+
+  ctx.command('w+<page:number>', '跳转到指定页 Warfarin Wiki 检索结果')
+    .action(async ({ session }, page?: number) => pageWikiPage(session, page))
+
+  ctx.command('w-', '显示上一页 Warfarin Wiki 检索结果')
+    .action(async ({ session }) => pageWiki(session, -1))
+
+  ctx.middleware(async (session, next) => {
+    const content = String(session?.stripped?.content ?? session?.content ?? '').trim()
+    const match = content.match(/^w\+([1-9]\d*)$/)
+    if (!match) return next()
+    const text = await pageWikiPage(session, Number(match[1]))
+    if (text) await session.send(text)
+  })
+
+  root.subcommand('.w <keyword:text>', '检索明日方舟：终末地资料')
+    .alias('.wiki')
+    .action(async ({ session }, keyword?: string) => searchWiki(session, keyword || ''))
+
+  root.subcommand('.wc [target:string]', '查看终末地资料上下文')
+    .alias('.wiki-context')
+    .action(async ({ session }, target?: string) => showWikiContext(session, target || ''))
+
   root.subcommand('.r [target:string]', '强制刷新 PRTS 截图缓存')
     .alias('.refresh', '.reset')
     .action(async ({ session }, target?: string) => refreshTarget(session, target || 'all'))
@@ -244,6 +311,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
       await service.refreshDue()
       await runScheduledPushIfDue()
       await runCacheMaintenanceIfDue()
+      await runStoryUpdateIfDue()
     } finally {
       backgroundRunning = false
     }
@@ -262,6 +330,198 @@ export function apply(ctx: Context, config: RuntimeConfig) {
       `缓存目录数：${diagnostics.dayKeys.length}`,
       `维护：${maintenance.enabled ? `开启，保留最近 ${maintenance.keepRecentDays} 天，归档 ${maintenance.archiveEnabled ? '开启' : '关闭'}` : '关闭'}`,
     ].join('\n')
+  }
+
+  async function handleWikiInput(session: any, input: string) {
+    const normalized = String(input || '').trim()
+    if (!normalized) return '请输入关键词，例如：w 息壤'
+    if (/^\d+$/.test(normalized)) {
+      if (wikiSelections.has(getWikiSelectionKey(session))) return showWikiContext(session, normalized)
+    }
+    if (normalized === '+' || normalized === '下一页') return pageWiki(session, 1)
+    if (normalized === '-' || normalized === '上一页') return pageWiki(session, -1)
+    const shortcut = parseWikiShortcut(normalized)
+    if (shortcut) {
+      await searchWiki(session, shortcut.keyword)
+      return showWikiContext(session, String(shortcut.index))
+    }
+    return searchWiki(session, normalized)
+  }
+
+  async function searchWiki(session: any, keyword: string, source: WikiSearchSource = 'wiki') {
+    if (!session) return '只能在会话中使用该命令。'
+    const normalizedKeyword = String(keyword || '').trim()
+    if (!normalizedKeyword) return '请输入关键词，例如：w 息壤'
+    pruneWikiSelections()
+    try {
+      const result = source === 'story'
+        ? tagWikiSearchResult(await getCachedWikiSearch(normalizedKeyword, 'story'), 'story')
+        : await searchAllWikiSources(normalizedKeyword)
+      wikiSelections.set(getWikiSelectionKey(session), { expiresAt: Date.now() + resolved.wiki.selectionTtlMs, keyword: normalizedKeyword, offset: 0, total: result.total, results: result.results })
+      return formatWikiSearchResults({ ...result, keyword: normalizedKeyword, offset: 0, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+    } catch (error) {
+      logger.warn(`${source === 'story' ? '剧情/任务全文' : '终末地资料'}检索失败：${formatError(error)}`)
+      return formatWikiCommandError(error, source === 'story' ? '剧情/任务检索暂时不可用，请稍后重试。' : '资料检索暂时不可用，请稍后重试。')
+    }
+  }
+
+  async function searchAllWikiSources(keyword: string) {
+    const settled = await Promise.allSettled([
+      getCachedWikiSearch(keyword, 'wiki'),
+      getCachedWikiSearch(keyword, 'story'),
+    ])
+    const wiki = settled[0].status === 'fulfilled' ? tagWikiSearchResult(settled[0].value, 'wiki') : emptyWikiSearchResult()
+    const story = settled[1].status === 'fulfilled' ? tagWikiSearchResult(settled[1].value, 'story') : emptyWikiSearchResult()
+    if (settled[0].status === 'rejected' && settled[1].status === 'rejected') throw settled[0].reason
+    if (settled[0].status === 'rejected') logger.warn(`Warfarin Wiki 官方搜索失败，使用剧情全文结果：${formatError(settled[0].reason)}`)
+    if (settled[1].status === 'rejected') logger.warn(`剧情/任务全文搜索失败，使用官方结果：${formatError(settled[1].reason)}`)
+    const results = dedupeWikiResults([...wiki.results, ...story.results])
+    return { results, total: results.length, took_ms: Math.max(wiki.took_ms, story.took_ms) }
+  }
+
+  async function getCachedWikiSearch(keyword: string, source: WikiSearchSource = 'wiki') {
+    const key = source === 'story' ? `story:${resolved.wiki.storyBaseUrl}:${storyScopes.join(',')}:${keyword}` : `${resolved.wiki.mode}:${resolved.wiki.baseUrl}:${keyword}`
+    const searchCache = source === 'story' ? storySearchCache : wikiSearchCache
+    const now = Date.now()
+    if (resolved.wiki.searchCacheTtlMs > 0) {
+      const cached = searchCache.get(key)
+      if (cached && cached.expiresAt > now) return cached.result
+      if (cached) searchCache.delete(key)
+    }
+    const result = await (source === 'story' ? getStorySearch(keyword) : wikiClient.search({ keyword }))
+    if (resolved.wiki.searchCacheTtlMs > 0) {
+      searchCache.set(key, { expiresAt: now + resolved.wiki.searchCacheTtlMs, result })
+      pruneWikiSearchCache(searchCache)
+    }
+    return result
+  }
+
+  async function getStorySearch(keyword: string) {
+    if (resolved.wiki.storySearchEnabled) {
+      const local = await storySearch.search({ keyword })
+      if (local.results.length) return local
+    }
+    return storyClient.search({ keyword })
+  }
+
+  function tagWikiSearchResult(result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number }, source: WikiSearchSource) {
+    return {
+      ...result,
+      results: result.results.map((item) => ({ ...item, sourceKind: source })),
+    }
+  }
+
+  function emptyWikiSearchResult() {
+    return { results: [] as SelectedWikiAnchor[], total: 0, took_ms: 0 }
+  }
+
+  function dedupeWikiResults(results: SelectedWikiAnchor[]) {
+    const seen = new Set<string>()
+    const unique: SelectedWikiAnchor[] = []
+    for (const item of results) {
+      const key = `${item.sourceKind || 'wiki'}:${item.anchor_id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      unique.push(item)
+    }
+    return unique
+  }
+
+  function pruneWikiSearchCache(searchCache = wikiSearchCache) {
+    const now = Date.now()
+    for (const [key, value] of searchCache) {
+      if (value.expiresAt < now) searchCache.delete(key)
+    }
+    while (searchCache.size > resolved.wiki.searchCacheMaxEntries) {
+      const oldest = searchCache.keys().next().value
+      if (!oldest) break
+      searchCache.delete(oldest)
+    }
+  }
+
+  function parseWikiShortcut(input: string) {
+    const match = input.match(/^(.+?)\s+(\d+)$/)
+    if (!match) return undefined
+    const keyword = match[1].trim()
+    const index = Number(match[2])
+    if (!keyword || !Number.isInteger(index) || index <= 0) return undefined
+    return { keyword, index }
+  }
+
+  async function showWikiContext(session: any, target: string, source?: WikiSearchSource) {
+    if (!session) return '只能在会话中使用该命令。'
+    const anchor = resolveWikiAnchor(session, target, source)
+    if (!anchor) return '请先使用 w 关键词 检索，再用 w 编号 查看详情。'
+    const actualSource = source || anchor.sourceKind || 'wiki'
+    try {
+      if (actualSource === 'wiki' && resolved.wiki.mode === 'official') return formatWikiContext({ anchor, full_text: [], summary: null, source_ref: anchor.source })
+      const result = actualSource === 'story' ? await getStoryContext(anchor.anchor_id) : await wikiClient.context({
+        anchorId: anchor.anchor_id,
+        needSummary: false,
+        contextRange: 3,
+      })
+      return formatWikiContext(result)
+    } catch (error) {
+      logger.warn(`${actualSource === 'story' ? '剧情/任务全文' : '终末地资料'}上下文检索失败：${formatError(error)}`)
+      if (error instanceof WarfarinWikiApiError && error.code === 404) {
+        return formatWikiContext({ anchor, full_text: [], summary: null, source_ref: anchor.source })
+      }
+      return formatWikiCommandError(error, '资料上下文暂时不可用，请稍后重试。')
+    }
+  }
+
+  async function getStoryContext(anchorId: string) {
+    if (resolved.wiki.storySearchEnabled) {
+      try {
+        return await storySearch.context({ anchorId })
+      } catch {}
+    }
+    return storyClient.context({ anchorId, needSummary: false, contextRange: 3 })
+  }
+
+  async function pageWiki(session: any, direction: 1 | -1) {
+    if (!session) return '只能在会话中使用该命令。'
+    pruneWikiSelections()
+    const key = getWikiSelectionKey(session)
+    const cached = wikiSelections.get(key)
+    if (!cached || cached.expiresAt < Date.now()) return '请先使用 w 关键词 检索。'
+    const lastPageOffset = Math.floor(Math.max(0, cached.results.length - 1) / resolved.wiki.pageSize) * resolved.wiki.pageSize
+    const nextOffset = Math.min(Math.max(0, cached.offset + direction * resolved.wiki.pageSize), lastPageOffset)
+    cached.offset = nextOffset
+    cached.expiresAt = Date.now() + resolved.wiki.selectionTtlMs
+    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+  }
+
+  async function pageWikiPage(session: any, page: unknown) {
+    if (!session) return '只能在会话中使用该命令。'
+    const pageNumber = Number(page)
+    if (!Number.isInteger(pageNumber) || pageNumber <= 0) return '页码必须是大于 0 的整数。'
+    pruneWikiSelections()
+    const cached = wikiSelections.get(getWikiSelectionKey(session))
+    if (!cached || cached.expiresAt < Date.now()) return '请先使用 w 关键词 检索。'
+    const lastPage = Math.max(1, Math.ceil(cached.results.length / resolved.wiki.pageSize))
+    cached.offset = (Math.min(pageNumber, lastPage) - 1) * resolved.wiki.pageSize
+    cached.expiresAt = Date.now() + resolved.wiki.selectionTtlMs
+    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+  }
+
+  function resolveWikiAnchor(session: any, target: string, source?: WikiSearchSource) {
+    pruneWikiSelections()
+    const normalized = String(target || '').trim()
+    const index = Number(normalized)
+    if (Number.isInteger(index) && index > 0) {
+      const cached = wikiSelections.get(getWikiSelectionKey(session))
+      if (!cached || cached.expiresAt < Date.now()) return undefined
+      return cached.results[index - 1]
+    }
+    return { anchor_id: normalized, content: '', source: normalized, scope: 'wiki', relevance: 0, sourceKind: source || 'wiki' }
+  }
+
+  function pruneWikiSelections() {
+    const now = Date.now()
+    for (const [key, value] of wikiSelections) {
+      if (value.expiresAt < now) wikiSelections.delete(key)
+    }
   }
 
   async function runCacheMaintenanceIfDue() {
@@ -290,6 +550,64 @@ export function apply(ctx: Context, config: RuntimeConfig) {
       logger.info(`PRTS 缓存维护完成：保留 ${report.keptDayKeys.length} 天，归档 ${report.archivedDayKeys.length} 天，删除 ${report.deletedDayKeys.length} 天。`)
     } catch (error) {
       logger.warn(`PRTS 缓存维护失败：${formatError(error)}`)
+    }
+  }
+
+  async function runStoryUpdateIfDue() {
+    if (!resolved.wiki.storySearchEnabled) return
+    const now = nowProvider()
+    const parts = getZonedParts(now, resolved.timezone)
+    if (!matchesCronExpression(resolved.wiki.storyUpdateCron, parts)) return
+    const dayKey = getPrtsDayKey(now, resolved.timezone, resolved.dailyRefreshHour)
+    if (dayKey === lastStoryUpdatedDayKey) return
+    const ok = await runStoryUpdate('定时更新')
+    if (ok) lastStoryUpdatedDayKey = dayKey
+  }
+
+  async function runStoryUpdate(reason: string) {
+    if (storyUpdating) return false
+    storyUpdating = true
+    try {
+      const report = await storySearch.update()
+      logger.info(`Warfarin 剧情文本${reason}完成：成功 ${report.success}，跳过 ${report.skipped}，重查 ${report.refreshed}，待补 ${report.pending}，失败 ${report.failed}。`)
+      return true
+    } catch (error) {
+      logger.warn(`Warfarin 剧情文本${reason}失败：${formatError(error)}`)
+      return false
+    } finally {
+      storyUpdating = false
+    }
+  }
+
+  async function buildConsoleStatus() {
+    const ping = async (url: string) => {
+      try {
+        await ctx.http(url, { method: 'GET', timeout: resolved.wiki.timeoutMs, validateStatus: () => true })
+        return '可用'
+      } catch {
+        return '不可用'
+      }
+    }
+    return {
+      push: {
+        enabled: resolved.scheduledPush.enabled,
+        channels: resolved.scheduledPush.channels.filter(Boolean).length,
+        cron: resolved.scheduledPush.cron,
+      },
+      sites: {
+        prts: await ping(resolved.baseUrl),
+        warfarin: await ping(`${resolved.wiki.baseUrl.replace(/\/+$/g, '')}/${resolved.wiki.language}/search?q=%E6%81%AF%E5%A3%A4`),
+        story: resolved.wiki.storySearchEnabled ? `本地 ${storySearch.size} 条` : await ping(`${resolved.wiki.storyBaseUrl.replace(/\/+$/g, '')}/${resolved.wiki.storyLanguage}/search?q=%E7%94%BB%E5%8D%B7%E9%80%9A%E9%81%93&scope=${storyScopes.join(',')}`),
+      },
+      cache: {
+        refreshCron: resolved.refreshCron,
+        pushCron: resolved.scheduledPush.cron,
+        maintenanceCron: resolved.cacheMaintenance.archiveCron,
+        searchTtlMs: resolved.wiki.searchCacheTtlMs,
+        searchEntries: wikiSearchCache.size + storySearchCache.size,
+        searchMaxEntries: resolved.wiki.searchCacheMaxEntries,
+        searchLabel: formatSearchCacheStatus(resolved.wiki.searchCacheTtlMs, wikiSearchCache.size + storySearchCache.size, resolved.wiki.searchCacheMaxEntries),
+      },
     }
   }
 
@@ -336,6 +654,8 @@ function buildHelp() {
     'prts d：PRTS 今日信息整合图',
     'prts s：PRTS 今日信息摘要文本',
     'prts cache：查看缓存根目录、当前日切和最近缓存',
+    'w <关键词>：检索 Warfarin Wiki 终末地资料',
+    'w <编号>：查看上一轮检索结果详情；w+ / w- 翻页；w+页码 跳页',
     'prts r [d|s|all]：强制刷新今日信息截图或摘要，默认 all',
     'prts h：查看帮助',
     '缓存按 04:00 日切；当天重复请求会直接读取本地缓存。',
@@ -388,6 +708,28 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
       hour: config.scheduledPush?.hour,
       minute: config.scheduledPush?.minute,
     },
+    wiki: {
+      mode: config.wiki?.mode || 'official',
+      baseUrl: config.wiki?.baseUrl || 'https://api.warfarin.wiki/v1',
+      language: config.wiki?.language || 'cn',
+      storyBaseUrl: config.wiki?.storyBaseUrl || 'http://127.0.0.1:3000/api/v1',
+      storyLanguage: config.wiki?.storyLanguage || 'cn',
+      storySearchEnabled: config.wiki?.storySearchEnabled ?? true,
+      storyDataDirectory: config.wiki?.storyDataDirectory || 'data/miyako-intel/warfarin-story',
+      storyUpdateCron: config.wiki?.storyUpdateCron || '20 4 * * *',
+      storyUpdateOnStart: config.wiki?.storyUpdateOnStart ?? false,
+      storyUpdateRateLimitMs: config.wiki?.storyUpdateRateLimitMs ?? 500,
+      storyUpdateBatchSize: config.wiki?.storyUpdateBatchSize ?? 40,
+      storyRefreshExistingDays: config.wiki?.storyRefreshExistingDays ?? 14,
+      storyRefreshExistingBatchSize: config.wiki?.storyRefreshExistingBatchSize ?? 5,
+      storyBundleManifestUrl: config.wiki?.storyBundleManifestUrl ?? defaultStoryBundleManifestUrl,
+      timeoutMs: config.wiki?.timeoutMs ?? 10000,
+      userAgent: config.wiki?.userAgent || defaultUserAgent,
+      searchCacheTtlMs: config.wiki?.searchCacheTtlMs ?? 600000,
+      searchCacheMaxEntries: config.wiki?.searchCacheMaxEntries ?? 100,
+      pageSize: config.wiki?.pageSize ?? 5,
+      selectionTtlMs: config.wiki?.selectionTtlMs ?? 300000,
+    },
     now: config.now || undefined,
   }
 }
@@ -425,7 +767,46 @@ function normalizeSummaryDisplayItemKey(item: string): SummaryDisplayItemKey | '
 }
 
 function formatError(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
+  if (!(error instanceof Error)) return String(error)
+  const cause = (error as Error & { cause?: any }).cause
+  if (!cause) return error.message
+  const detail = [cause.code, cause.name, cause.message].filter(Boolean).join(' ')
+  return detail ? `${error.message} (${detail})` : error.message
+}
+
+function getWikiSelectionKey(session: any) {
+  return [session?.platform || '', session?.guildId || '', session?.channelId || session?.cid || '', session?.userId || session?.uid || ''].join(':')
+}
+
+function formatWikiCommandError(error: unknown, fallback: string) {
+  if (error instanceof WarfarinWikiApiError) {
+    if (error.code === 400) return `检索参数不合法：${error.message}`
+    if (error.code === 404) return `没有找到这条资料：${error.message}`
+  }
+  return fallback
+}
+
+function formatSearchCacheStatus(ttlMs: number, entries: number, maxEntries: number) {
+  if (!ttlMs) return '关闭'
+  const minutes = Math.max(1, Math.round(ttlMs / 60000))
+  return `${entries}/${maxEntries}，${minutes} 分钟`
+}
+
+function createKoishiHttpFetch(http: any, timeoutMs: number) {
+  if (!http) return undefined
+  return async (url: string, init: Record<string, any>) => {
+    const options: Record<string, any> = {
+      method: init.method,
+      headers: init.headers,
+      timeout: timeoutMs,
+      signal: init.signal,
+      validateStatus: () => true,
+    }
+    if (init.body !== undefined) options.data = JSON.parse(init.body)
+    const response = await http(url, options)
+    if (response && typeof response === 'object' && 'data' in response && 'status' in response) return response.data
+    return response
+  }
 }
 
 function createScopedLogger(base: any, level: RuntimeConfig['logLevel']) {

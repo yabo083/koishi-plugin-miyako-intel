@@ -42,12 +42,32 @@
       <div class="miyako-intel-nav__section">
         <div class="miyako-intel-nav__section-title">状态</div>
         <div class="miyako-intel-nav__status">
-          <span>推送</span>
+          <span>定时推送</span>
           <strong>{{ pushStatus }}</strong>
         </div>
         <div class="miyako-intel-nav__status">
-          <span>摘要</span>
-          <strong>{{ enabledSummaryCount }}/{{ summaryDisplayItems.length }}</strong>
+          <span>PRTS 站点</span>
+          <strong>{{ status.sites.prts }}</strong>
+        </div>
+        <div class="miyako-intel-nav__status">
+          <span>官方 API</span>
+          <strong>{{ status.sites.warfarin }}</strong>
+        </div>
+        <div class="miyako-intel-nav__status">
+          <span>剧情 API</span>
+          <strong>{{ status.sites.story }}</strong>
+        </div>
+        <div class="miyako-intel-nav__status">
+          <span>PRTS 补缓存</span>
+          <strong>{{ status.cache.refreshCron }}</strong>
+        </div>
+        <div class="miyako-intel-nav__status">
+          <span>缓存维护</span>
+          <strong>{{ status.cache.maintenanceCron }}</strong>
+        </div>
+        <div class="miyako-intel-nav__status">
+          <span>资料搜索缓存</span>
+          <strong>{{ searchCacheStatus }}</strong>
         </div>
       </div>
     </div>
@@ -64,6 +84,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { send } from '@koishijs/client'
 
 interface CurrentSettings {
   config?: Record<string, any>
@@ -79,7 +100,6 @@ const pluginName = inject<ComputedRef<string>>('plugin:name')
 const current = inject<ComputedRef<CurrentSettings>>('manager.settings.current')
 
 const isOwn = computed(() => pluginName?.value === 'koishi-plugin-miyako-intel')
-const config = computed(() => current?.value?.config || {})
 const isCollapsed = ref(false)
 const activeItem = ref('')
 
@@ -96,33 +116,45 @@ const mouse = reactive({
 })
 
 const navItems: NavItem[] = [
-  { id: 'site', label: '缓存与站点', keys: ['baseUrl', 'cacheDirectory', 'refreshCron'] },
-  { id: 'capture', label: '截图', keys: ['deviceScaleFactor', 'imageFormat', 'jpegQuality'] },
-  { id: 'text', label: '输出文本', keys: ['messagePrefix', 'summaryMaxItems', 'summaryDatePreview'] },
-  { id: 'summary', label: '摘要展示项', keys: ['summaryDisplayItems'] },
-  { id: 'theme', label: '视觉主题', keys: ['cardTheme', 'primaryColor', 'textColor'] },
-  { id: 'push', label: '定时推送', keys: ['scheduledPush', 'channels'] },
+  { id: 'site', label: '基础设置', keys: ['baseUrl', 'cacheDirectory', 'refreshCron'] },
+  { id: 'capture', label: 'PRTS 今日情报', keys: ['deviceScaleFactor', 'imageFormat', 'jpegQuality'] },
+  { id: 'text', label: '消息输出', keys: ['messagePrefix', 'summaryMaxItems', 'summaryDatePreview'] },
+  { id: 'theme', label: '外观', keys: ['cardTheme', 'primaryColor', 'textColor'] },
+  { id: 'push', label: '定时任务', keys: ['scheduledPush', 'channels'] },
   { id: 'maintenance', label: '缓存维护', keys: ['cacheMaintenance', 'archiveCron'] },
+  { id: 'wiki', label: 'Warfarin 资料检索', keys: ['wiki', 'storyBaseUrl', 'searchCacheTtlMs'] },
+  { id: 'advanced', label: '调试与高级', keys: ['logLevel', 'userAgent', 'mode'] },
 ]
+
+const status = ref({
+  push: { enabled: false, channels: 0, cron: '' },
+  sites: { prts: '未检查', warfarin: '未检查', story: '未检查' },
+  cache: { refreshCron: '', pushCron: '', maintenanceCron: '', searchTtlMs: 0, searchEntries: 0, searchMaxEntries: 0, searchLabel: '关闭' },
+})
+let statusTimer: number | undefined
 
 const positionStyle = computed(() => ({
   top: `${mouse.top}px`,
   right: `${mouse.right}px`,
 }))
 
-const summaryDisplayItems = computed(() => {
-  return Array.isArray(config.value.summaryDisplayItems)
-    ? config.value.summaryDisplayItems
-    : []
-})
-
-const enabledSummaryCount = computed(() => {
-  return summaryDisplayItems.value.filter((item: any) => item?.enabled !== false).length
-})
-
 const pushStatus = computed(() => {
-  return config.value.scheduledPush?.enabled ? '开启' : '关闭'
+  if (!status.value.push.enabled) return '关闭'
+  return `${status.value.push.channels} 个频道`
 })
+
+const searchCacheStatus = computed(() => {
+  return status.value.cache.searchLabel
+})
+
+async function loadStatus() {
+  if (!isOwn.value) return
+  try {
+    status.value = await send('miyako-intel/status') as typeof status.value
+  } catch {
+    status.value.sites = { prts: '未检查', warfarin: '未检查', story: '未检查' }
+  }
+}
 
 function toggleCollapse(event: MouseEvent) {
   event.stopPropagation()
@@ -232,7 +264,11 @@ window.addEventListener('touchmove', onMove)
 window.addEventListener('touchend', endMove)
 
 watch(isOwn, (value) => {
-  if (value) setTimeout(initObserver, 800)
+  if (!value) return
+  setTimeout(initObserver, 800)
+  loadStatus()
+  if (statusTimer) window.clearInterval(statusTimer)
+  statusTimer = window.setInterval(loadStatus, 60000)
 }, { immediate: true })
 
 watch(current || ref(), () => {
@@ -245,6 +281,7 @@ onUnmounted(() => {
   window.removeEventListener('touchmove', onMove)
   window.removeEventListener('touchend', endMove)
   observer?.disconnect()
+  if (statusTimer) window.clearInterval(statusTimer)
 })
 </script>
 

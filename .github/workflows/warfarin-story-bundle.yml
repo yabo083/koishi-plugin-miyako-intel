@@ -1,0 +1,41 @@
+name: Warfarin Story Bundle
+
+on:
+  schedule:
+    - cron: "30 18 15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-story-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Install
+        run: npm install
+
+      - name: Build server
+        run: npm run build:server
+
+      - name: Build Warfarin story bundle
+        run: node scripts/build-warfarin-story-bundle.mjs
+
+      - name: Publish bundle release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f warfarin-story-latest
+          git push origin refs/tags/warfarin-story-latest --force
+          gh release view warfarin-story-latest >/dev/null 2>&1 || gh release create warfarin-story-latest --title "Warfarin Story Bundle" --notes "Compressed Warfarin Wiki story text bundle for miyako-intel."
+          gh release upload warfarin-story-latest artifacts/warfarin-story/warfarin-story-cn.json.gz artifacts/warfarin-story/warfarin-story-cn.manifest.json --clobber
