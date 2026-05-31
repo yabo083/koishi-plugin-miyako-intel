@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -15,6 +16,7 @@ const filename = `warfarin-story-${language}.json.gz`
 const manifestName = `warfarin-story-${language}.manifest.json`
 const bundleUrl = `https://github.com/${repository}/releases/download/${releaseTag}/${filename}`
 const manifestUrl = `https://github.com/${repository}/releases/download/${releaseTag}/${manifestName}`
+const browserUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
 
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 const previousManifest = await fetchJson(manifestUrl).catch(() => null)
@@ -89,8 +91,61 @@ async function fetchJson(url) {
 }
 
 async function fetchText(url) {
+  if (process.env.STORY_HTML_FETCHER !== 'fetch' && String(url).startsWith('https://warfarin.wiki/')) {
+    return fetchTextWithChrome(url)
+  }
   const response = await fetchWithTimeout(url)
   return response.text()
+}
+
+async function fetchTextWithChrome(url) {
+  const candidates = process.env.STORY_CHROME_BIN
+    ? [process.env.STORY_CHROME_BIN]
+    : ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']
+  const errors = []
+  for (const bin of candidates) {
+    try {
+      return await runChromeDump(bin, url)
+    } catch (error) {
+      errors.push(`${bin}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new Error(`Could not fetch ${url} with headless Chrome. ${errors.join(' | ')}`)
+}
+
+function runChromeDump(bin, url) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--lang=zh-CN',
+      `--user-agent=${browserUserAgent}`,
+      '--dump-dom',
+      url,
+    ]
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (code === 0 && stdout.trim()) return resolve(stdout)
+      reject(new Error(`exited ${code}${stderr ? `: ${stderr.trim().slice(0, 300)}` : ''}`))
+    })
+  })
 }
 
 async function fetchWithTimeout(url) {
@@ -114,7 +169,7 @@ function requestHeaders(url) {
     }
   }
   return {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'User-Agent': browserUserAgent,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'Cache-Control': 'no-cache',
