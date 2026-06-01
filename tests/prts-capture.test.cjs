@@ -638,7 +638,7 @@ test('warfarin wiki command uses built-in local story index before remote story 
     baseDir,
     http: async (url, init) => {
       requests.push({ url, body: init.data })
-      if (url.includes('api.warfarin.wiki')) return { query: '火锅', results: [] }
+      if (url.includes('api.warfarin.wiki')) return { query: '独行之路', results: [] }
       throw new Error(`remote story should not be called: ${url}`)
     },
   })
@@ -647,12 +647,12 @@ test('warfarin wiki command uses built-in local story index before remote story 
 
   const search = commandHandlers.get('w <input:text>')
   const session = createSession()
-  const searchText = await search({ session, options: {} }, '火锅')
+  const searchText = await search({ session, options: {} }, '独行之路')
   const detail = await search({ session, options: {} }, '1')
 
-  assert.match(searchText, /任务剧情：共饮一江水/)
-  assert.match(detail, /名称：共饮一江水 \| 类型：任务剧情 \| 任务编号：c27m5 \| 来源：Warfarin Wiki/)
-  assert.match(detail, /管理员：火锅会让大家暖和起来。/)
+  assert.match(searchText, /Baker对话：独行之路/)
+  assert.match(detail, /名称：独行之路 \| 类型：Baker对话 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /不择手段/)
   assert.equal(requests.length, 1)
 })
 

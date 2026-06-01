@@ -63,6 +63,40 @@ test('built-in story search seeds initial local index without source requests', 
   assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'seed.json')), true)
 })
 
+test('built-in story search replaces stale legacy local cache with bundled full-text seed', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-stale-local-'))
+  const anchorsDir = path.join(baseDir, 'story-cache', 'cn', 'anchors')
+  fs.mkdirSync(anchorsDir, { recursive: true })
+  fs.writeFileSync(path.join(anchorsDir, 'c27m5.json'), JSON.stringify({
+    anchor_id: 'c27m5_0',
+    content: '管理员：火锅会让大家暖和起来。',
+    source: '任务剧情：共饮一江水',
+    source_ref: '任务剧情：共饮一江水',
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: '火锅会让大家暖和起来。' }],
+  }))
+
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    timeoutMs: 1000,
+    fetch: async (url) => {
+      throw new Error(`seed load should not fetch: ${url}`)
+    },
+  })
+
+  await service.load()
+  const search = await service.search({ keyword: '不择手段' })
+
+  assert.ok(service.size >= 2300)
+  assert.equal(search.results.some((result) => result.source === 'Baker对话：独行之路'), true)
+  assert.equal(fs.existsSync(path.join(anchorsDir, 'seed.json')), true)
+  assert.equal(fs.existsSync(path.join(anchorsDir, 'c27m5.json')), false)
+})
+
 test('built-in story search updates from remote compressed story text bundle', async () => {
   const { WarfarinStorySearchService } = loadStorySearch()
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-bundle-'))
@@ -156,6 +190,42 @@ test('built-in story search reports bundle update warning while keeping local te
   assert.match(report.warning, /network down/)
   assert.ok(report.success >= 200)
   assert.equal(search.total, 1)
+})
+
+test('built-in story search does not downgrade bundled full-text seed to stale official bundle', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-stale-bundle-'))
+  const anchors = [{
+    anchor_id: 'c27m5_0',
+    content: '管理员：火锅会让大家暖和起来。',
+    source: '任务剧情：共饮一江水',
+    source_ref: '任务剧情：共饮一江水',
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: '火锅会让大家暖和起来。' }],
+  }]
+  const bundle = zlib.gzipSync(JSON.stringify(anchors))
+  const sha256 = crypto.createHash('sha256').update(bundle).digest('hex')
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    fetch: async (url) => {
+      if (String(url).endsWith('.manifest.json')) return jsonResponse({ language: 'cn', source: 'warfarin.wiki', count: anchors.length, updatedAt: '2026-05-31T00:00:00.000Z', sha256, url: 'https://example.test/warfarin-story-cn.json.gz' })
+      if (String(url).endsWith('.json.gz')) return bufferResponse(bundle)
+      throw new Error(`unexpected fetch: ${url}`)
+    },
+  })
+
+  const report = await service.update()
+  const search = await service.search({ keyword: '不择手段' })
+
+  assert.equal(report.failed, 1)
+  assert.match(report.warning, /older than bundled seed/)
+  assert.ok(service.size >= 2300)
+  assert.equal(search.results.some((result) => result.source === 'Baker对话：独行之路'), true)
 })
 
 test('story bundle builder sends browser headers to Warfarin HTML pages', () => {

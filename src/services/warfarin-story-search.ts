@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult } from './warfarin-wiki'
-import { bundledStorySeedLanguage, loadBundledStorySeed } from './warfarin-story-seed'
+import { bundledStorySeedCount, bundledStorySeedLanguage, loadBundledStorySeed } from './warfarin-story-seed'
 
 export interface WarfarinStorySearchOptions {
   baseDir: string
@@ -39,6 +39,7 @@ export class WarfarinStorySearchService {
   private readonly fetchImpl: (url: string, init?: Record<string, any>) => Promise<any>
   private anchors: StoryAnchor[] = []
   private loaded = false
+  private loading?: Promise<void>
 
   constructor(options: WarfarinStorySearchOptions) {
     this.root = isAbsolute(options.dataDirectory) ? options.dataDirectory : resolve(options.baseDir, options.dataDirectory)
@@ -49,6 +50,14 @@ export class WarfarinStorySearchService {
   }
 
   async load() {
+    if (this.loading) return this.loading
+    this.loading = this.loadAnchors().finally(() => {
+      this.loading = undefined
+    })
+    return this.loading
+  }
+
+  private async loadAnchors() {
     const dir = this.anchorsDir()
     const files = await readdir(dir).catch(() => [])
     const anchors: StoryAnchor[] = []
@@ -58,7 +67,10 @@ export class WarfarinStorySearchService {
       if (Array.isArray(payload)) anchors.push(...payload.filter(isStoryAnchor))
       else if (isStoryAnchor(payload)) anchors.push(payload)
     }
-    if (!anchors.length) anchors.push(...await this.installBundledSeed())
+    if (!anchors.length || this.shouldReplaceWithBundledSeed(files, anchors.length)) {
+      anchors.length = 0
+      anchors.push(...await this.installBundledSeed())
+    }
     this.anchors = anchors
     this.loaded = true
   }
@@ -121,6 +133,7 @@ export class WarfarinStorySearchService {
     if (this.language !== bundledStorySeedLanguage) return []
     const anchors = loadBundledStorySeed().filter(isStoryAnchor)
     if (!anchors.length) return []
+    await rm(this.anchorsDir(), { recursive: true, force: true })
     await mkdir(this.anchorsDir(), { recursive: true })
     await writeFile(join(this.anchorsDir(), 'seed.json'), JSON.stringify(anchors, null, 2))
     const updatedAt = new Date().toISOString()
@@ -146,6 +159,8 @@ export class WarfarinStorySearchService {
     const payload = JSON.parse(gunzipSync(compressed).toString('utf8'))
     const anchors = (Array.isArray(payload) ? payload : payload?.anchors || []).filter(isStoryAnchor)
     if (!anchors.length) throw new Error('story bundle has no usable anchors')
+    if (this.isOfficialBundle(manifest) && this.isOlderThanBundledSeed(anchors.length)) throw new Error(`story bundle is older than bundled seed: ${anchors.length} < ${bundledStorySeedCount}`)
+    await rm(this.anchorsDir(), { recursive: true, force: true })
     await mkdir(this.anchorsDir(), { recursive: true })
     await writeFile(join(this.anchorsDir(), 'bundle.json'), JSON.stringify(anchors, null, 2))
     this.anchors = anchors
@@ -158,6 +173,20 @@ export class WarfarinStorySearchService {
 
   private async readLocalManifest() {
     return readFile(join(this.root, this.language, 'manifest.json'), 'utf8').then(JSON.parse).catch(() => null)
+  }
+
+  private shouldReplaceWithBundledSeed(files: string[], count: number) {
+    if (this.language !== bundledStorySeedLanguage) return false
+    if (files.includes('bundle.json')) return false
+    return count < bundledStorySeedCount
+  }
+
+  private isOlderThanBundledSeed(count: number) {
+    return this.language === bundledStorySeedLanguage && count < bundledStorySeedCount
+  }
+
+  private isOfficialBundle(manifest: any) {
+    return String(manifest?.source || '').trim() === 'warfarin.wiki'
   }
 
   private async fetchWithTimeout(url: string) {
