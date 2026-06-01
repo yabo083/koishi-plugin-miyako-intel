@@ -456,6 +456,32 @@ test('story bundle builder can build a full-text category bundle from Warfarin A
   assert.match(anchors.find(anchor => anchor.scope === 'baker').content, /创意食谱/)
 })
 
+test('bundled seed regeneration stays aligned with runtime parser metadata', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-seed-regenerate-'))
+  const rawRoot = path.join(baseDir, 'raw')
+  const outFile = path.join(baseDir, 'warfarin-story-seed.ts')
+  fs.mkdirSync(path.join(rawRoot, 'missions'), { recursive: true })
+  fs.mkdirSync(path.join(rawRoot, 'lorev2'), { recursive: true })
+  fs.writeFileSync(path.join(rawRoot, 'missions', 'c27m5.json'), JSON.stringify({
+    mission: { id: 'c27m5', name: '共饮一江水' },
+    dialog: [{ actorName: '管理员', dialogText: '火锅。' }],
+  }))
+  fs.writeFileSync(path.join(rawRoot, 'lorev2', 'wuling.json'), JSON.stringify({
+    richContentTable: { title: '武陵记事', contentList: [{ content: '武陵的协议网络。' }] },
+  }))
+
+  const result = childProcess.spawnSync(process.execPath, [path.join(rootDir, 'scripts', 'regenerate-warfarin-story-seed.mjs'), rawRoot, outFile], {
+    cwd: rootDir,
+    encoding: 'utf8',
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.deepEqual(JSON.parse(result.stdout).count, 2)
+  const generated = fs.readFileSync(outFile, 'utf8')
+  assert.match(generated, /export const bundledStorySeedVersion = 3/)
+  assert.match(generated, /export const bundledStorySeedCount = 2/)
+})
+
 test('story bundle builder does not reuse anchors from older parser versions', () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-parser-version-'))
   const outDir = path.join(baseDir, 'out')
