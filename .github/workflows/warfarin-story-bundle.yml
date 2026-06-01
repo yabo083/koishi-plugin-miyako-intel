@@ -4,6 +4,17 @@ on:
   schedule:
     - cron: "17 18 * * 0"
   workflow_dispatch:
+    inputs:
+      force_deep_check:
+        description: "Force full Warfarin API detail crawl instead of seed/unchanged fast path"
+        required: false
+        type: boolean
+        default: false
+      categories:
+        description: "Optional comma-separated categories for test runs"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -30,6 +41,8 @@ jobs:
         env:
           STORY_UPDATE_RATE_LIMIT_MS: "150"
           STORY_UPDATE_CONCURRENCY: "4"
+          STORY_FORCE_DEEP_CHECK: ${{ github.event.inputs.force_deep_check == 'true' && '1' || '0' }}
+          STORY_CATEGORIES: ${{ github.event.inputs.categories }}
         run: node scripts/build-warfarin-story-bundle.mjs
 
       - name: Publish bundle release assets

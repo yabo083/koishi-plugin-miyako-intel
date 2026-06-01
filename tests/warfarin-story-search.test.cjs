@@ -347,6 +347,9 @@ test('story bundle workflow sets friendly pacing defaults', () => {
 
   assert.match(workflow, /STORY_UPDATE_RATE_LIMIT_MS:\s*"150"/)
   assert.match(workflow, /STORY_UPDATE_CONCURRENCY:\s*"4"/)
+  assert.match(workflow, /force_deep_check:/)
+  assert.match(workflow, /STORY_FORCE_DEEP_CHECK:/)
+  assert.match(workflow, /STORY_CATEGORIES:/)
 })
 
 test('story bundle builder can build a full-text category bundle from Warfarin API lists', () => {
