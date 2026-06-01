@@ -1295,7 +1295,7 @@ test('registers console client entry and status listener when console service is
   assert.equal(status.push.enabled, false)
   assert.equal(status.sites.prts, '可用')
   assert.equal(status.sites.warfarin, '可用')
-  assert.equal(status.sites.story, '本地 2319 条')
+  assert.equal(status.sites.story, '本地 2233 条')
   assert.equal(status.cache.refreshCron, '5 4 * * *')
   assert.equal(status.cache.searchLabel, '4/100，10 分钟')
   assert.equal(status.cache.maintenanceCron, '30 4 * * *')

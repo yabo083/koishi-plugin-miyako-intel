@@ -10,6 +10,7 @@ import { bundledStorySeedCount, loadBundledStorySeed } from '../lib/services/war
 const language = process.env.STORY_LANGUAGE || 'cn'
 const repository = process.env.GITHUB_REPOSITORY || 'yabo083/koishi-plugin-miyako-intel'
 const releaseTag = process.env.STORY_RELEASE_TAG || 'warfarin-story-latest'
+const parserVersion = 2
 const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
 const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)
@@ -179,11 +180,13 @@ function shouldPublishBundledSeed(manifest) {
   if (process.env.STORY_USE_BUNDLED_SEED === '1') return true
   if (!manifest) return false
   if (normalizeLanguage(manifest.language || language) !== language) return false
+  if (Number(manifest.parserVersion || 0) < parserVersion) return true
   return Number(manifest.count || 0) > 0 && Number(manifest.count || 0) < bundledStorySeedCount
 }
 
 function shouldSkipUnchanged(manifest) {
   if (process.env.STORY_FORCE_UPDATE === '1' || process.env.STORY_FORCE_DEEP_CHECK === '1') return false
+  if (Number(manifest?.parserVersion || 0) < parserVersion) return false
   if (!manifest?.sourceUpdatedAt || manifest.sourceUpdatedAt !== sourceUpdatedAt) return false
   return Number(manifest.count || 0) >= bundledStorySeedCount
 }
@@ -193,6 +196,7 @@ async function writeBundle(anchors, sourceReport) {
   const sha256 = createHash('sha256').update(compressed).digest('hex')
   const manifest = {
     schemaVersion: 1,
+    parserVersion,
     language,
     count: anchors.length,
     updatedAt: new Date().toISOString(),

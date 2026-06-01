@@ -91,7 +91,7 @@ test('built-in story search replaces stale legacy local cache with bundled full-
   await service.load()
   const search = await service.search({ keyword: '不择手段' })
 
-  assert.ok(service.size >= 2300)
+  assert.ok(service.size >= 2200)
   assert.equal(search.results.some((result) => result.source === 'Baker对话：独行之路'), true)
   assert.equal(fs.existsSync(path.join(anchorsDir, 'seed.json')), true)
   assert.equal(fs.existsSync(path.join(anchorsDir, 'c27m5.json')), false)
@@ -224,7 +224,7 @@ test('built-in story search does not downgrade bundled full-text seed to stale o
 
   assert.equal(report.failed, 1)
   assert.match(report.warning, /older than bundled seed/)
-  assert.ok(service.size >= 2300)
+  assert.ok(service.size >= 2200)
   assert.equal(search.results.some((result) => result.source === 'Baker对话：独行之路'), true)
 })
 
@@ -337,7 +337,8 @@ test('story bundle builder publishes bundled seed when remote bundle is stale', 
   assert.match(result.stdout, /Warfarin story bundle bundled seed publish:/)
   const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.manifest.json'), 'utf8'))
   const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
-  assert.ok(manifest.count >= 2300)
+  assert.equal(manifest.parserVersion, 2)
+  assert.ok(manifest.count >= 2200)
   assert.equal(manifest.sourceReport.refreshed, anchors.length)
   assert.equal(anchors.some(anchor => anchor.source === 'Baker对话：独行之路'), true)
 })
@@ -396,13 +397,13 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
   const baker = createWarfarinAnchorsFromDetail('baker', 'a-culinary-invitation', {
     summary: { name: '美食邀请' },
     SNSChatTable: { sns_chr_0004_pelica: { name: '佩丽卡' } },
-    SNSDialogOptionTable: { option_1: { optionDesc: '某种创意食谱？' } },
+    SNSDialogOptionTable: { option_1: { optionDesc: '某种创意食谱？' }, option_2: { optionDesc: '另一种料理？' } },
     SNSDialogTable: {
       topic: {
         dialogContentData: {
           1: { speaker: 'sns_chr_0004_pelica', content: '发现了些有趣的东西。' },
           2: { speaker: 'endmin', content: '就像是某种裂地者的创意食谱？' },
-          3: { speaker: 'endmin', content: '', dialogOptionIds: ['option_1'] },
+          3: { speaker: 'endmin', content: '', dialogOptionIds: ['option_1', 'option_2'] },
         },
       },
     },
@@ -412,8 +413,8 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
     enemyAbilityDescTable: { acid: { name: '酸液', description: '腐蚀金属。' } },
   })
   const medal = createWarfarinAnchorsFromDetail('medals', 'advanced-progression', {
-    achievementTable: { name: '高阶培养奖章', levelInfos: { 2: { completeDesc: '找到最顶尖的材料。', conditions: [{ desc: '通关所有“协议空间·高阶培养”' }] } } },
-    achievementTypeTable: { categoryName: '技艺奖章' },
+    achievementTable: { name: '高阶培养奖章', groupId: 'achv_group_quest_main', levelInfos: { 2: { completeDesc: '找到最顶尖的材料。', conditions: [{ desc: '通关所有“协议空间·高阶培养”' }] } } },
+    achievementTypeTable: { categoryName: '技艺奖章', achievementGroupData: [{ groupId: 'achv_group_quest_main', groupName: '主线任务奖章' }, { groupId: 'achv_group_quest_side', groupName: '探索任务奖章' }] },
   })
   const tutorial = createWarfarinAnchorsFromDetail('tutorials', 'wiki_tut_adv_ap', {
     wikiTutorialPageTable: { page: { title: '理智', content: '探索协议空间时，会消耗理智。' } },
@@ -422,13 +423,16 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
   assert.equal(baker[0].source, 'Baker对话：美食邀请')
   assert.equal(baker[0].scope, 'baker')
   assert.match(baker[0].content, /佩丽卡：发现了些有趣的东西。/)
-  assert.match(baker[0].content, /选项：某种创意食谱？/)
+  assert.match(baker[0].content, /选项：某种创意食谱？ \| 另一种料理？/)
   assert.deepEqual(baker[0].full_text[0], { speaker: '佩丽卡', text: '发现了些有趣的东西。' })
+  assert.deepEqual(baker[0].full_text.at(-1), { speaker: '选项', text: '某种创意食谱？ | 另一种料理？' })
 
   assert.equal(enemy[0].source, '敌人资料：潜地虬兽')
   assert.match(enemy[0].content, /腐蚀金属/)
   assert.equal(medal[0].source, '奖章信息：高阶培养奖章')
   assert.match(medal[0].content, /协议空间·高阶培养/)
+  assert.match(medal[0].content, /主线任务奖章/)
+  assert.doesNotMatch(medal[0].content, /探索任务奖章/)
   assert.equal(tutorial[0].source, '教程：理智')
   assert.match(tutorial[0].content, /消耗理智/)
 })

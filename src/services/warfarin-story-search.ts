@@ -274,10 +274,12 @@ function createBakerAnchors(slug: string, data: any): StoryAnchor[] {
       const speaker = speakerMap.get(String(entry?.speaker || '')) || stripTags(entry?.speaker || '') || '旁白'
       const text = stripTags(entry?.content || '')
       if (text) rows.push({ speaker, text })
+      const optionTexts: string[] = []
       for (const optionId of Array.isArray(entry?.dialogOptionIds) ? entry.dialogOptionIds : []) {
         const optionText = stripTags(optionTable?.[optionId]?.optionDesc || '')
-        if (optionText) rows.push({ speaker: '选项', text: optionText })
+        if (optionText) optionTexts.push(optionText)
       }
+      if (optionTexts.length) rows.push({ speaker: '选项', text: optionTexts.join(' | ') })
     }
   }
   const name = stripTags(data?.summary?.name || data?.SNSDialogTopicTable?.topicName || '') || slug
@@ -313,6 +315,10 @@ function createMedalAnchors(slug: string, data: any): StoryAnchor[] {
     }
   }
   texts.push(...extractFromTable(data?.achievementTypeTable, 'categoryName'))
+  const group = Array.isArray(data?.achievementTypeTable?.achievementGroupData)
+    ? data.achievementTypeTable.achievementGroupData.find((item: any) => item?.groupId === ach?.groupId)
+    : undefined
+  texts.push(...extractFromTable(group, 'groupName'))
   const name = stripTags(ach?.name || '') || slug
   return [makeStoryAnchor(slug, 0, texts.join('\n'), `奖章信息：${name}`, 'medals')]
 }
