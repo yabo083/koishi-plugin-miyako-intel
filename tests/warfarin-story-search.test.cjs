@@ -310,6 +310,38 @@ test('story bundle builder logs progress and uses friendly default pacing', () =
   assert.match(result.stdout, /Warfarin story bundle category done: missions/) 
 })
 
+test('story bundle builder publishes bundled seed when remote bundle is stale', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-seed-publish-'))
+  const outDir = path.join(baseDir, 'out')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    function response(payload, ok = true) {
+      return { ok, status: ok ? 200 : 404, async json() { return payload }, async text() { return String(payload) } }
+    }
+    globalThis.fetch = async (url) => {
+      const value = String(url)
+      if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', sourceUpdatedAt: '2026-05-14', count: 221 })
+      if (value.startsWith('https://api.warfarin.wiki/')) throw new Error('stale remote should publish bundled seed without crawling source: ' + value)
+      throw new Error('unexpected fetch: ' + value)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, STORY_API_FETCHER: 'fetch', STORY_CATEGORIES: 'missions', STORY_HTML_FETCHER: 'fetch' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /Warfarin story bundle bundled seed publish:/)
+  const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.manifest.json'), 'utf8'))
+  const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
+  assert.ok(manifest.count >= 2300)
+  assert.equal(manifest.sourceReport.refreshed, anchors.length)
+  assert.equal(anchors.some(anchor => anchor.source === 'Baker对话：独行之路'), true)
+})
+
 test('story bundle workflow sets friendly pacing defaults', () => {
   const workflow = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'warfarin-story-bundle.yml'), 'utf8')
 

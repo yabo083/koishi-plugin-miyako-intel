@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-search.js'
+import { bundledStorySeedCount, loadBundledStorySeed } from '../lib/services/warfarin-story-seed.js'
 
 const language = process.env.STORY_LANGUAGE || 'cn'
 const repository = process.env.GITHUB_REPOSITORY || 'yabo083/koishi-plugin-miyako-intel'
@@ -30,6 +31,20 @@ const previousManifest = await fetchJson(manifestUrl).catch(() => null)
 const previousBundle = await fetchPreviousBundle(previousManifest).catch(() => [])
 const previousByKey = groupPreviousAnchors(previousBundle)
 log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size}`)
+if (shouldPublishBundledSeed(previousManifest)) {
+  const seedAnchors = loadBundledStorySeed().filter(isBundleAnchor)
+  if (!seedAnchors.length) throw new Error('bundled story seed has no usable anchors')
+  log(`Warfarin story bundle bundled seed publish: previousCount=${Number(previousManifest?.count || 0)} seedCount=${seedAnchors.length} elapsed=${elapsed()}`)
+  await writeBundle(seedAnchors, { success: seedAnchors.length, failed: 0, skipped: 0, pending: 0, refreshed: seedAnchors.length })
+  process.exit(0)
+}
+if (shouldSkipUnchanged(previousManifest)) {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(joinPath(outDir, 'skipped.json'), JSON.stringify({ skipped: true, sourceUpdatedAt, success: Number(previousManifest.count || 0) }, null, 2))
+  log(`Warfarin story bundle unchanged: count=${Number(previousManifest.count || 0)} sourceUpdatedAt=${sourceUpdatedAt} elapsed=${elapsed()}`)
+  console.log(JSON.stringify({ skipped: true, sourceUpdatedAt, success: Number(previousManifest.count || 0) }, null, 2))
+  process.exit(0)
+}
 const anchors = []
 let failed = 0
 let skipped = 0
@@ -86,25 +101,7 @@ if (process.env.STORY_FORCE_UPDATE !== '1' && previousManifest?.sha256 && refres
   process.exit(0)
 }
 
-const compressed = gzipSync(JSON.stringify(anchors), { level: 9 })
-const sha256 = createHash('sha256').update(compressed).digest('hex')
-const manifest = {
-  schemaVersion: 1,
-  language,
-  count: anchors.length,
-  updatedAt: new Date().toISOString(),
-  sourceUpdatedAt,
-  sha256,
-  filename,
-  url: bundleUrl,
-  source: 'warfarin.wiki',
-  sourceReport: { success: anchors.length, failed, skipped, pending: 0, refreshed },
-  entries: anchors.map(anchor => ({ key: anchor.source_key, rawSha256: anchor.raw_sha256 })).filter(entry => entry.key && entry.rawSha256),
-}
-
-await mkdir(outDir, { recursive: true })
-await writeFile(joinPath(outDir, filename), compressed)
-await writeFile(joinPath(outDir, manifestName), JSON.stringify(manifest, null, 2))
+const { sha256 } = await writeBundle(anchors, { success: anchors.length, failed, skipped, pending: 0, refreshed })
 log(`Warfarin story bundle done: count=${anchors.length} refreshed=${refreshed} skipped=${skipped} failed=${failed} elapsed=${elapsed()}`)
 console.log(JSON.stringify({ outDir, filename, manifestName, count: anchors.length, sourceUpdatedAt, sha256 }, null, 2))
 
@@ -169,8 +166,52 @@ function normalizeScope(category) {
   return scope === 'lorev2' ? 'lore' : scope
 }
 
+function normalizeLanguage(value) {
+  return String(value || 'cn').trim().toLowerCase() || 'cn'
+}
+
 function hashJson(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
+function shouldPublishBundledSeed(manifest) {
+  if (process.env.STORY_FORCE_UPDATE === '1' || process.env.STORY_FORCE_DEEP_CHECK === '1') return false
+  if (process.env.STORY_USE_BUNDLED_SEED === '1') return true
+  if (!manifest) return false
+  if (normalizeLanguage(manifest.language || language) !== language) return false
+  return Number(manifest.count || 0) > 0 && Number(manifest.count || 0) < bundledStorySeedCount
+}
+
+function shouldSkipUnchanged(manifest) {
+  if (process.env.STORY_FORCE_UPDATE === '1' || process.env.STORY_FORCE_DEEP_CHECK === '1') return false
+  if (!manifest?.sourceUpdatedAt || manifest.sourceUpdatedAt !== sourceUpdatedAt) return false
+  return Number(manifest.count || 0) >= bundledStorySeedCount
+}
+
+async function writeBundle(anchors, sourceReport) {
+  const compressed = gzipSync(JSON.stringify(anchors), { level: 9 })
+  const sha256 = createHash('sha256').update(compressed).digest('hex')
+  const manifest = {
+    schemaVersion: 1,
+    language,
+    count: anchors.length,
+    updatedAt: new Date().toISOString(),
+    sourceUpdatedAt,
+    sha256,
+    filename,
+    url: bundleUrl,
+    source: 'warfarin.wiki',
+    sourceReport,
+    entries: anchors.map(anchor => ({ key: anchor.source_key, rawSha256: anchor.raw_sha256 })).filter(entry => entry.key && entry.rawSha256),
+  }
+  await mkdir(outDir, { recursive: true })
+  await writeFile(joinPath(outDir, filename), compressed)
+  await writeFile(joinPath(outDir, manifestName), JSON.stringify(manifest, null, 2))
+  return { sha256, manifest }
+}
+
+function isBundleAnchor(anchor) {
+  return anchor && typeof anchor.anchor_id === 'string' && typeof anchor.content === 'string' && typeof anchor.source === 'string'
 }
 
 async function mapWithConcurrency(items, limit, worker, spacingMs, onResult) {
