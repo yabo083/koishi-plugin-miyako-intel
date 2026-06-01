@@ -10,12 +10,14 @@ import { bundledStorySeedCount, loadBundledStorySeed } from '../lib/services/war
 const language = process.env.STORY_LANGUAGE || 'cn'
 const repository = process.env.GITHUB_REPOSITORY || 'yabo083/koishi-plugin-miyako-intel'
 const releaseTag = process.env.STORY_RELEASE_TAG || 'warfarin-story-latest'
-const parserVersion = 2
+const parserVersion = 3
 const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
 const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)
 const progressEvery = Math.max(1, Number(process.env.STORY_PROGRESS_EVERY || 25))
 const progressIntervalMs = Math.max(1000, Number(process.env.STORY_PROGRESS_INTERVAL_MS || 15000))
+const sourceUpdateDelayHours = Math.max(0, Number(process.env.STORY_SOURCE_UPDATE_DELAY_HOURS || 0))
+const nowMs = process.env.STORY_NOW ? Date.parse(process.env.STORY_NOW) : Date.now()
 const outDir = resolve(process.argv[2] || 'artifacts/warfarin-story')
 const filename = `warfarin-story-${language}.json.gz`
 const manifestName = `warfarin-story-${language}.manifest.json`
@@ -29,7 +31,14 @@ log(`Warfarin story bundle start: language=${language} categories=${categories.j
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
 const previousManifest = await fetchJson(manifestUrl).catch(() => null)
-const previousBundle = await fetchPreviousBundle(previousManifest).catch(() => [])
+if (shouldDelaySourceUpdate(previousManifest)) {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(joinPath(outDir, 'skipped.json'), JSON.stringify({ skipped: true, delayed: true, sourceUpdatedAt, previousSourceUpdatedAt: previousManifest?.sourceUpdatedAt || '', delayHours: sourceUpdateDelayHours }, null, 2))
+  log(`Warfarin story bundle delayed: sourceUpdatedAt=${sourceUpdatedAt} previous=${previousManifest?.sourceUpdatedAt || 'none'} delayHours=${sourceUpdateDelayHours} elapsed=${elapsed()}`)
+  console.log(JSON.stringify({ skipped: true, delayed: true, sourceUpdatedAt }, null, 2))
+  process.exit(0)
+}
+const previousBundle = shouldReusePreviousBundle(previousManifest) ? await fetchPreviousBundle(previousManifest).catch(() => []) : []
 const previousByKey = groupPreviousAnchors(previousBundle)
 log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size}`)
 if (shouldPublishBundledSeed(previousManifest)) {
@@ -189,6 +198,19 @@ function shouldSkipUnchanged(manifest) {
   if (Number(manifest?.parserVersion || 0) < parserVersion) return false
   if (!manifest?.sourceUpdatedAt || manifest.sourceUpdatedAt !== sourceUpdatedAt) return false
   return Number(manifest.count || 0) >= bundledStorySeedCount
+}
+
+function shouldDelaySourceUpdate(manifest) {
+  if (process.env.STORY_FORCE_UPDATE === '1' || process.env.STORY_FORCE_DEEP_CHECK === '1') return false
+  if (!sourceUpdateDelayHours || !manifest?.sourceUpdatedAt || manifest.sourceUpdatedAt === sourceUpdatedAt) return false
+  if (String(sourceUpdatedAt) <= String(manifest.sourceUpdatedAt)) return false
+  const sourceMs = Date.parse(`${sourceUpdatedAt}T00:00:00.000Z`)
+  if (!Number.isFinite(sourceMs) || !Number.isFinite(nowMs)) return false
+  return nowMs - sourceMs < sourceUpdateDelayHours * 60 * 60 * 1000
+}
+
+function shouldReusePreviousBundle(manifest) {
+  return Number(manifest?.parserVersion || 0) >= parserVersion
 }
 
 async function writeBundle(anchors, sourceReport) {

@@ -369,17 +369,50 @@ test('story bundle builder publishes bundled seed when remote bundle is stale', 
   assert.match(result.stdout, /Warfarin story bundle bundled seed publish:/)
   const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.manifest.json'), 'utf8'))
   const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
-  assert.equal(manifest.parserVersion, 2)
+  assert.equal(manifest.parserVersion, 3)
   assert.ok(manifest.count >= 2200)
   assert.equal(manifest.sourceReport.refreshed, anchors.length)
   assert.equal(anchors.some(anchor => anchor.source === 'Baker对话：独行之路'), true)
 })
 
+test('story bundle builder delays fresh source updates before deep crawling', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-delay-'))
+  const outDir = path.join(baseDir, 'out')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    function response(payload, ok = true) {
+      return { ok, status: ok ? 200 : 404, async json() { return payload }, async text() { return String(payload) } }
+    }
+    globalThis.fetch = async (url) => {
+      const value = String(url)
+      if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: 3, sourceUpdatedAt: '2026-05-13', count: 4047, sha256: 'previous' })
+      if (value.startsWith('https://api.warfarin.wiki/')) throw new Error('delayed update should not crawl source: ' + value)
+      throw new Error('unexpected fetch: ' + value)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, STORY_API_FETCHER: 'fetch', STORY_CATEGORIES: 'missions', STORY_HTML_FETCHER: 'fetch', STORY_NOW: '2026-05-14T12:00:00.000Z', STORY_SOURCE_UPDATE_DELAY_HOURS: '24' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /Warfarin story bundle delayed:/)
+  const skipped = JSON.parse(fs.readFileSync(path.join(outDir, 'skipped.json'), 'utf8'))
+  assert.equal(skipped.delayed, true)
+  assert.equal(skipped.sourceUpdatedAt, '2026-05-14')
+  assert.equal(fs.existsSync(path.join(outDir, 'warfarin-story-cn.json.gz')), false)
+})
+
 test('story bundle workflow sets friendly pacing defaults', () => {
   const workflow = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'warfarin-story-bundle.yml'), 'utf8')
 
-  assert.match(workflow, /STORY_UPDATE_RATE_LIMIT_MS:\s*"150"/)
-  assert.match(workflow, /STORY_UPDATE_CONCURRENCY:\s*"4"/)
+  assert.match(workflow, /STORY_UPDATE_RATE_LIMIT_MS:\s*"300"/)
+  assert.match(workflow, /STORY_UPDATE_CONCURRENCY:\s*"3"/)
+  assert.match(workflow, /runs-on:\s*\[self-hosted, linux, warfarin-story\]/)
+  assert.match(workflow, /STORY_SOURCE_UPDATE_DELAY_HOURS:\s*"24"/)
   assert.match(workflow, /force_deep_check:/)
   assert.match(workflow, /STORY_FORCE_DEEP_CHECK:/)
   assert.match(workflow, /STORY_CATEGORIES:/)
@@ -421,6 +454,36 @@ test('story bundle builder can build a full-text category bundle from Warfarin A
   assert.equal(manifest.sourceReport.success, 4)
   assert.deepEqual(new Set(anchors.map(anchor => anchor.scope)), new Set(['baker', 'enemies', 'medals', 'tutorials']))
   assert.match(anchors.find(anchor => anchor.scope === 'baker').content, /创意食谱/)
+})
+
+test('story bundle builder does not reuse anchors from older parser versions', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-parser-version-'))
+  const outDir = path.join(baseDir, 'out')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    function response(payload, ok = true) {
+      return { ok, status: ok ? 200 : 404, async json() { return payload }, async text() { return String(payload) } }
+    }
+    globalThis.fetch = async (url) => {
+      const value = String(url)
+      if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', sourceUpdatedAt: '2026-05-14', parserVersion: 2, count: 1, sha256: 'stale', url: 'https://example.test/stale.json.gz' })
+      if (value.endsWith('.json.gz')) throw new Error('older parser bundle should not be downloaded')
+      if (value === 'https://api.warfarin.wiki/v1/cn/baker') return response({ data: [{ slug: 'the-path-walked-alone' }] })
+      if (value.endsWith('/baker/the-path-walked-alone')) return response({ data: { summary: { name: '独行之路' }, SNSDialogTable: { topic: { dialogContentData: { 1: { speaker: 'endmin', content: '', dialogOptionIds: ['option_1', 'option_2'] } } } }, SNSDialogOptionTable: { option_1: { optionDesc: '你该去休息了。' }, option_2: { optionDesc: '别再熬夜巡逻了。' } } } })
+      throw new Error('unexpected fetch: ' + value)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, STORY_API_FETCHER: 'fetch', STORY_CATEGORIES: 'baker', STORY_FORCE_DEEP_CHECK: '1', STORY_HTML_FETCHER: 'fetch', STORY_UPDATE_RATE_LIMIT_MS: '0' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
+  assert.match(anchors[0].content, /选项：你该去休息了。 \| 别再熬夜巡逻了。/)
 })
 
 test('Warfarin detail parser builds searchable anchors for non-mission text', () => {
@@ -467,6 +530,68 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
   assert.doesNotMatch(medal[0].content, /探索任务奖章/)
   assert.equal(tutorial[0].source, '教程：理智')
   assert.match(tutorial[0].content, /消耗理智/)
+})
+
+test('Warfarin Baker parser groups API option branches and keeps character metadata searchable', () => {
+  const { createWarfarinAnchorsFromDetail } = loadStorySearch()
+
+  const baker = createWarfarinAnchorsFromDetail('baker', 'the-path-walked-alone', {
+    summary: { name: '独行之路' },
+    SNSChatTable: { sns_chr_0006_wolfgd: { name: '狼卫', desc: '正在解决问题或前往问题的路上。' } },
+    SNSDialogOptionTable: {
+      option_1: { optionDesc: '你该去休息了。', optionNextContentId: 2 },
+      option_2: { optionDesc: '别再熬夜巡逻了。', optionNextContentId: 3 },
+    },
+    SNSDialogTable: {
+      topic: {
+        dialogContentData: {
+          1: { speaker: 'endmin', content: '', contentId: 1, optionType: 1, dialogOptionIds: ['option_1', 'option_2'] },
+          2: { speaker: 'endmin', content: '狼卫，你该去休息一下了。', contentId: 2, preContentId: 1 },
+          3: { speaker: 'endmin', content: '狼卫，以后别再一个人熬夜巡逻了。', contentId: 3, preContentId: 1 },
+          4: { speaker: 'sns_chr_0006_wolfgd', content: '我知道了。', contentId: 4, preContentId: 3 },
+        },
+      },
+    },
+  })
+
+  assert.match(baker[0].content, /角色：狼卫/)
+  assert.match(baker[0].content, /简介：正在解决问题或前往问题的路上。/)
+  assert.match(baker[0].content, /选项：你该去休息了。 \| 别再熬夜巡逻了。/)
+  assert.equal((baker[0].content.match(/选项：/g) || []).length, 1)
+})
+
+test('Warfarin item parser skips achievement item shells in favor of medal anchors', () => {
+  const { createWarfarinAnchorsFromDetail } = loadStorySearch()
+
+  const anchors = createWarfarinAnchorsFromDetail('items', 'achv_adv_wuling_campfire_1_1', {
+    itemTable: { id: 'achv_adv_wuling_campfire_1_1', name: '锚定武陵奖章·Ⅰ', desc: '锚定武陵奖章·Ⅰ', decoDesc: '您已初步唤醒了武陵的协议网络。' },
+  })
+
+  assert.deepEqual(anchors, [])
+})
+
+test('Warfarin medal parser includes category and matched group labels', () => {
+  const { createWarfarinAnchorsFromDetail } = loadStorySearch()
+
+  const medal = createWarfarinAnchorsFromDetail('medals', 'anchored-to-wuling', {
+    achievementTable: {
+      name: '锚定武陵奖章·Ⅰ',
+      groupId: 'achv_group_adv_wuling',
+      levelInfos: { 1: { completeDesc: '您已初步唤醒了武陵的协议网络。', conditions: [{ desc: '于景玉谷和武陵城解锁19个协议传送点' }] } },
+    },
+    achievementTypeTable: {
+      categoryName: '地区奖章',
+      achievementGroupData: [
+        { groupId: 'achv_group_adv_tundra', groupName: '谷地地区奖章' },
+        { groupId: 'achv_group_adv_wuling', groupName: '武陵地区奖章' },
+      ],
+    },
+  })
+
+  assert.equal(medal[0].source, '奖章信息：锚定武陵奖章·Ⅰ')
+  assert.match(medal[0].content, /地区奖章/)
+  assert.match(medal[0].content, /武陵地区奖章/)
+  assert.doesNotMatch(medal[0].content, /谷地地区奖章/)
 })
 
 test('Warfarin mission parser sorts radio blocks by natural radio id order', () => {

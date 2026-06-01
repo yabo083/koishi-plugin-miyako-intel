@@ -2,7 +2,7 @@ name: Warfarin Story Bundle
 
 on:
   schedule:
-    - cron: "17 18 * * 0"
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       force_deep_check:
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-story-bundle:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, warfarin-story]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,8 +39,9 @@ jobs:
 
       - name: Build Warfarin story bundle
         env:
-          STORY_UPDATE_RATE_LIMIT_MS: "150"
-          STORY_UPDATE_CONCURRENCY: "4"
+          STORY_UPDATE_RATE_LIMIT_MS: "300"
+          STORY_UPDATE_CONCURRENCY: "3"
+          STORY_SOURCE_UPDATE_DELAY_HOURS: "24"
           STORY_FORCE_DEEP_CHECK: ${{ github.event.inputs.force_deep_check == 'true' && '1' || '0' }}
           STORY_CATEGORIES: ${{ github.event.inputs.categories }}
         run: node scripts/build-warfarin-story-bundle.mjs

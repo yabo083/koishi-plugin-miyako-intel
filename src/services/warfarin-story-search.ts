@@ -262,10 +262,14 @@ export function createWarfarinAnchorsFromDetail(category: string, slug: string, 
 
 function createBakerAnchors(slug: string, data: any): StoryAnchor[] {
   const rows: WarfarinWikiContextResult['full_text'] = []
+  const metadata: string[] = []
   const speakerMap = new Map<string, string>([['endmin', '管理员']])
   for (const [id, chat] of Object.entries(data?.SNSChatTable || {})) {
     const name = stripTags((chat as any)?.name || '')
     if (name) speakerMap.set(id, name)
+    if (name) metadata.push(`角色：${name}`)
+    const desc = stripTags((chat as any)?.desc || '')
+    if (desc) metadata.push(`简介：${desc}`)
   }
   const optionTable = data?.SNSDialogOptionTable || {}
   for (const dialog of Object.values(data?.SNSDialogTable || {})) {
@@ -285,7 +289,7 @@ function createBakerAnchors(slug: string, data: any): StoryAnchor[] {
     }
   }
   const name = stripTags(data?.summary?.name || data?.SNSDialogTopicTable?.topicName || '') || slug
-  return [makeStoryAnchor(slug, 0, rows.map(row => `${row.speaker}：${row.text}`).join('\n'), `Baker对话：${name}`, 'baker', rows)]
+  return [makeStoryAnchor(slug, 0, [...metadata, ...rows.map(row => `${row.speaker}：${row.text}`)].join('\n'), `Baker对话：${name}`, 'baker', rows)]
 }
 
 function createTutorialAnchors(slug: string, data: any): StoryAnchor[] {
@@ -345,12 +349,18 @@ function createOperatorAnchors(slug: string, data: any): StoryAnchor[] {
 }
 
 function createItemLikeAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
+  if (scope === 'items' && isAchievementItem(data?.itemTable)) return []
   const texts = [
     ...extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc'),
     ...extractFromTable(data?.factoryBuildingTable, 'name', 'desc'),
   ]
   const name = stripTags(data?.itemTable?.name || data?.factoryBuildingTable?.name || '') || slug
   return [makeStoryAnchor(slug, 0, texts.join('\n'), `${label}：${name}`, scope)]
+}
+
+function isAchievementItem(item: any) {
+  const id = String(item?.id || '').trim()
+  return id.startsWith('achv_')
 }
 
 function createGenericAnchors(slug: string, data: any, scope: string): StoryAnchor[] {
