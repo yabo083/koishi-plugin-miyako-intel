@@ -9,9 +9,11 @@ import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-
 const language = process.env.STORY_LANGUAGE || 'cn'
 const repository = process.env.GITHUB_REPOSITORY || 'yabo083/koishi-plugin-miyako-intel'
 const releaseTag = process.env.STORY_RELEASE_TAG || 'warfarin-story-latest'
-const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 500)
-const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 3))
+const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
+const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)
+const progressEvery = Math.max(1, Number(process.env.STORY_PROGRESS_EVERY || 25))
+const progressIntervalMs = Math.max(1000, Number(process.env.STORY_PROGRESS_INTERVAL_MS || 15000))
 const outDir = resolve(process.argv[2] || 'artifacts/warfarin-story')
 const filename = `warfarin-story-${language}.json.gz`
 const manifestName = `warfarin-story-${language}.manifest.json`
@@ -19,11 +21,15 @@ const bundleUrl = `https://github.com/${repository}/releases/download/${releaseT
 const manifestUrl = `https://github.com/${repository}/releases/download/${releaseTag}/${manifestName}`
 const browserUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
 const categories = parseCategories(process.env.STORY_CATEGORIES)
+const startedAt = Date.now()
 
+log(`Warfarin story bundle start: language=${language} categories=${categories.join(',')} concurrency=${concurrency} rateLimitMs=${rateLimitMs} timeoutMs=${timeoutMs}`)
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
+log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
 const previousManifest = await fetchJson(manifestUrl).catch(() => null)
 const previousBundle = await fetchPreviousBundle(previousManifest).catch(() => [])
 const previousByKey = groupPreviousAnchors(previousBundle)
+log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size}`)
 const anchors = []
 let failed = 0
 let skipped = 0
@@ -32,6 +38,8 @@ const failures = []
 
 for (const category of categories) {
   const slugs = await fetchSlugs(language, category)
+  log(`Warfarin story bundle category start: ${category} slugs=${slugs.length}`)
+  const categoryStats = { done: 0, failed: 0, skipped: 0, refreshed: 0, lastLogAt: Date.now() }
   const results = await mapWithConcurrency(slugs, concurrency, async (slug) => {
     try {
       const data = await fetchDetail(language, category, slug)
@@ -44,7 +52,17 @@ for (const category of categories) {
     } catch (error) {
       return { error: `${category}/${slug}: ${error instanceof Error ? error.message : String(error)}` }
     }
-  }, rateLimitMs)
+  }, rateLimitMs, (result) => {
+    categoryStats.done++
+    if (result?.error) categoryStats.failed++
+    else if (result?.skipped) categoryStats.skipped += result.anchors?.length || 0
+    else categoryStats.refreshed += result?.anchors?.length || 0
+    const now = Date.now()
+    if (categoryStats.done === slugs.length || categoryStats.done % progressEvery === 0 || now - categoryStats.lastLogAt >= progressIntervalMs) {
+      categoryStats.lastLogAt = now
+      log(`Warfarin story bundle progress: category=${category} ${categoryStats.done}/${slugs.length} refreshed=${categoryStats.refreshed} skipped=${categoryStats.skipped} failed=${categoryStats.failed} elapsed=${elapsed()}`)
+    }
+  })
   for (const result of results) {
     if (result?.error) {
       failed++
@@ -55,6 +73,7 @@ for (const category of categories) {
     if (result?.skipped) skipped += result.anchors?.length || 0
     else refreshed += result?.anchors?.length || 0
   }
+  log(`Warfarin story bundle category done: ${category} anchors=${anchors.length} refreshed=${refreshed} skipped=${skipped} failed=${failed} elapsed=${elapsed()}`)
 }
 
 if (!anchors.length) throw new Error(`No Warfarin story text anchors were generated. ${failures.join(' | ')}`)
@@ -62,6 +81,7 @@ if (!anchors.length) throw new Error(`No Warfarin story text anchors were genera
 if (process.env.STORY_FORCE_UPDATE !== '1' && previousManifest?.sha256 && refreshed === 0 && failed === 0) {
   await mkdir(outDir, { recursive: true })
   await writeFile(joinPath(outDir, 'skipped.json'), JSON.stringify({ skipped: true, sourceUpdatedAt, success: anchors.length }, null, 2))
+  log(`Warfarin story bundle unchanged: count=${anchors.length} sourceUpdatedAt=${sourceUpdatedAt} elapsed=${elapsed()}`)
   console.log(JSON.stringify({ skipped: true, sourceUpdatedAt, success: anchors.length }, null, 2))
   process.exit(0)
 }
@@ -85,6 +105,7 @@ const manifest = {
 await mkdir(outDir, { recursive: true })
 await writeFile(joinPath(outDir, filename), compressed)
 await writeFile(joinPath(outDir, manifestName), JSON.stringify(manifest, null, 2))
+log(`Warfarin story bundle done: count=${anchors.length} refreshed=${refreshed} skipped=${skipped} failed=${failed} elapsed=${elapsed()}`)
 console.log(JSON.stringify({ outDir, filename, manifestName, count: anchors.length, sourceUpdatedAt, sha256 }, null, 2))
 
 async function fetchSourceUpdatedAt(lang) {
@@ -152,7 +173,7 @@ function hashJson(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
-async function mapWithConcurrency(items, limit, worker, spacingMs) {
+async function mapWithConcurrency(items, limit, worker, spacingMs, onResult) {
   const results = new Array(items.length)
   let next = 0
   let lastStart = 0
@@ -165,6 +186,7 @@ async function mapWithConcurrency(items, limit, worker, spacingMs) {
       }
       lastStart = Date.now()
       results[index] = await worker(items[index], index)
+      onResult?.(results[index], index, items[index])
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run))
@@ -185,7 +207,10 @@ async function fetchJson(url) {
     const response = await fetchWithTimeout(url)
     return response.json()
   } catch (error) {
-    if (process.env.STORY_API_FETCHER !== 'fetch' && isWarfarinApi) return fetchJsonWithChrome(url)
+    if (process.env.STORY_API_FETCHER !== 'fetch' && isWarfarinApi) {
+      log(`Warfarin story bundle chrome fallback: ${url} reason=${error instanceof Error ? error.message : String(error)}`)
+      return fetchJsonWithChrome(url)
+    }
     throw error
   }
 }
@@ -313,4 +338,12 @@ function joinPath(...parts) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function log(message) {
+  console.log(`[${new Date().toISOString()}] ${message}`)
+}
+
+function elapsed() {
+  return `${Math.round((Date.now() - startedAt) / 1000)}s`
 }

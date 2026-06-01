@@ -27,6 +27,9 @@ jobs:
         run: npm run build:server
 
       - name: Build Warfarin story bundle
+        env:
+          STORY_UPDATE_RATE_LIMIT_MS: "150"
+          STORY_UPDATE_CONCURRENCY: "4"
         run: node scripts/build-warfarin-story-bundle.mjs
 
       - name: Publish bundle release assets

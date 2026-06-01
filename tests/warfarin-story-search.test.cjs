@@ -278,6 +278,45 @@ test('story bundle builder sends browser headers to Warfarin HTML pages', () => 
   assert.ok(fs.existsSync(path.join(outDir, 'warfarin-story-cn.manifest.json')))
 })
 
+test('story bundle builder logs progress and uses friendly default pacing', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-progress-'))
+  const outDir = path.join(baseDir, 'out')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    function response(payload, ok = true) {
+      return { ok, status: ok ? 200 : 404, async json() { return payload }, async text() { return String(payload) }, async arrayBuffer() { return Buffer.from(String(payload)) } }
+    }
+    globalThis.fetch = async (url) => {
+      const value = String(url)
+      if (value.endsWith('.manifest.json')) return response({ message: 'missing' }, false)
+      if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
+      if (value === 'https://api.warfarin.wiki/v1/cn/missions') return response({ data: [{ slug: 'c27m5' }, { slug: 'c27m6' }] })
+      if (value.endsWith('/missions/c27m5')) return response({ data: { mission: { id: 'c27m5', name: '共饮一江水' }, dialog: [{ actorName: '管理员', dialogText: '火锅。' }] } })
+      if (value.endsWith('/missions/c27m6')) return response({ data: { mission: { id: 'c27m6', name: '再饮一江水' }, dialog: [{ actorName: '管理员', dialogText: '热汤。' }] } })
+      throw new Error('unexpected fetch: ' + value)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, STORY_API_FETCHER: 'fetch', STORY_CATEGORIES: 'missions', STORY_HTML_FETCHER: 'fetch', STORY_PROGRESS_EVERY: '1' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /Warfarin story bundle start: language=cn categories=missions concurrency=4 rateLimitMs=150/)
+  assert.match(result.stdout, /Warfarin story bundle category start: missions slugs=2/)
+  assert.match(result.stdout, /Warfarin story bundle progress: category=missions 1\/2/)
+  assert.match(result.stdout, /Warfarin story bundle category done: missions/) 
+})
+
+test('story bundle workflow sets friendly pacing defaults', () => {
+  const workflow = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'warfarin-story-bundle.yml'), 'utf8')
+
+  assert.match(workflow, /STORY_UPDATE_RATE_LIMIT_MS:\s*"150"/)
+  assert.match(workflow, /STORY_UPDATE_CONCURRENCY:\s*"4"/)
+})
+
 test('story bundle builder can build a full-text category bundle from Warfarin API lists', () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-full-builder-'))
   const outDir = path.join(baseDir, 'out')
