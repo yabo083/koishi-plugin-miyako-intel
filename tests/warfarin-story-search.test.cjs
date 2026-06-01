@@ -97,6 +97,38 @@ test('built-in story search replaces stale legacy local cache with bundled full-
   assert.equal(fs.existsSync(path.join(anchorsDir, 'c27m5.json')), false)
 })
 
+test('built-in story search replaces old expanded seed with current bundled seed version', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const { bundledStorySeedCount } = require(path.join(rootDir, 'lib', 'services', 'warfarin-story-seed.js'))
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-old-seed-'))
+  const root = path.join(baseDir, 'story-cache', 'cn')
+  const anchorsDir = path.join(root, 'anchors')
+  fs.mkdirSync(anchorsDir, { recursive: true })
+  const oldAnchors = Array.from({ length: bundledStorySeedCount }, (_, index) => ({
+    anchor_id: index === 0 ? 'the-path-walked-alone_0' : `dummy_${index}`,
+    content: index === 0 ? '荒野有自己的法则，很多人习惯了为活下去不择手段。' : `dummy ${index}`,
+    source: index === 0 ? 'Baker对话：独行之路' : `资料：dummy ${index}`,
+    source_ref: index === 0 ? 'Baker对话：独行之路' : `资料：dummy ${index}`,
+    scope: index === 0 ? 'baker' : 'dummy',
+    relevance: 1,
+    full_text: [{ speaker: '资料', text: index === 0 ? '荒野有自己的法则，很多人习惯了为活下去不择手段。' : `dummy ${index}` }],
+  }))
+  fs.writeFileSync(path.join(anchorsDir, 'seed.json'), JSON.stringify(oldAnchors))
+  fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({ language: 'cn', seeded: bundledStorySeedCount }))
+
+  const service = new WarfarinStorySearchService({ baseDir, dataDirectory: 'story-cache', language: 'cn', timeoutMs: 1000, fetch: async (url) => { throw new Error(`seed load should not fetch: ${url}`) } })
+  await service.load()
+  const baker = await service.context({ anchorId: 'the-path-walked-alone_0' })
+  const medal = await service.context({ anchorId: 'the-final-lord-i-served_0' })
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'))
+
+  assert.equal(baker.full_text[0].speaker, '选项')
+  assert.match(baker.full_text[0].text, / \| /)
+  assert.match(baker.anchor.content, /管理员：狼卫，你该去休息一下了。/)
+  assert.doesNotMatch(medal.anchor.content, /探索任务奖章/)
+  assert.equal(manifest.bundledStorySeedVersion, 2)
+})
+
 test('built-in story search updates from remote compressed story text bundle', async () => {
   const { WarfarinStorySearchService } = loadStorySearch()
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-bundle-'))

@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult } from './warfarin-wiki'
-import { bundledStorySeedCount, bundledStorySeedLanguage, loadBundledStorySeed } from './warfarin-story-seed'
+import { bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion, loadBundledStorySeed } from './warfarin-story-seed'
 
 export interface WarfarinStorySearchOptions {
   baseDir: string
@@ -67,7 +67,8 @@ export class WarfarinStorySearchService {
       if (Array.isArray(payload)) anchors.push(...payload.filter(isStoryAnchor))
       else if (isStoryAnchor(payload)) anchors.push(payload)
     }
-    if (!anchors.length || this.shouldReplaceWithBundledSeed(files, anchors.length)) {
+    const manifest = await this.readLocalManifest()
+    if (!anchors.length || this.shouldReplaceWithBundledSeed(files, anchors.length, manifest)) {
       anchors.length = 0
       anchors.push(...await this.installBundledSeed())
     }
@@ -138,7 +139,7 @@ export class WarfarinStorySearchService {
     await writeFile(join(this.anchorsDir(), 'seed.json'), JSON.stringify(anchors, null, 2))
     const updatedAt = new Date().toISOString()
     await mkdir(join(this.root, this.language), { recursive: true })
-    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, seeded: anchors.length }, null, 2))
+    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, seeded: anchors.length, bundledStorySeedVersion, bundledStorySeedCount }, null, 2))
     return anchors
   }
 
@@ -175,9 +176,10 @@ export class WarfarinStorySearchService {
     return readFile(join(this.root, this.language, 'manifest.json'), 'utf8').then(JSON.parse).catch(() => null)
   }
 
-  private shouldReplaceWithBundledSeed(files: string[], count: number) {
+  private shouldReplaceWithBundledSeed(files: string[], count: number, manifest: any) {
     if (this.language !== bundledStorySeedLanguage) return false
     if (files.includes('bundle.json')) return false
+    if (manifest?.bundledStorySeedVersion !== bundledStorySeedVersion) return true
     return count < bundledStorySeedCount
   }
 

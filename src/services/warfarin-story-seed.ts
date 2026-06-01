@@ -1,6 +1,7 @@
 import { gunzipSync } from "node:zlib"
 
 export const bundledStorySeedLanguage = "cn"
+export const bundledStorySeedVersion = 2
 export const bundledStorySeedCount = 2233
 const bundledStorySeedChunks = [
   "H4sIAAAAAAACCuy9WW8rS3Ym+leM/VywOQ/1dtFP/XB/QfdFgSNsuFxlnKpqd6PRQFIS51ESJVIkJYoSKVIDJ41kJgfg/pRzMiIz",
