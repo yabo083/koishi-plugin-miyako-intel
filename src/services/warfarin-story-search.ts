@@ -27,6 +27,8 @@ export interface WarfarinStoryUpdateReport {
 interface StoryAnchor extends WarfarinWikiAnchor {
   full_text: WarfarinWikiContextResult['full_text']
   source_ref: string
+  source_key?: string
+  raw_sha256?: string
 }
 
 export class WarfarinStorySearchService {
@@ -120,11 +122,7 @@ export class WarfarinStorySearchService {
     const anchors = loadBundledStorySeed().filter(isStoryAnchor)
     if (!anchors.length) return []
     await mkdir(this.anchorsDir(), { recursive: true })
-    for (const anchor of anchors) {
-      const slug = anchor.anchor_id.split('_')[0]
-      if (!slug) continue
-      await writeFile(join(this.anchorsDir(), `${slug}.json`), JSON.stringify(anchor, null, 2))
-    }
+    await writeFile(join(this.anchorsDir(), 'seed.json'), JSON.stringify(anchors, null, 2))
     const updatedAt = new Date().toISOString()
     await mkdir(join(this.root, this.language), { recursive: true })
     await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, seeded: anchors.length }, null, 2))
@@ -149,11 +147,7 @@ export class WarfarinStorySearchService {
     const anchors = (Array.isArray(payload) ? payload : payload?.anchors || []).filter(isStoryAnchor)
     if (!anchors.length) throw new Error('story bundle has no usable anchors')
     await mkdir(this.anchorsDir(), { recursive: true })
-    for (const anchor of anchors) {
-      const slug = anchor.anchor_id.split('_')[0]
-      if (!slug) continue
-      await writeFile(join(this.anchorsDir(), `${slug}.json`), JSON.stringify(anchor, null, 2))
-    }
+    await writeFile(join(this.anchorsDir(), 'bundle.json'), JSON.stringify(anchors, null, 2))
     this.anchors = anchors
     this.loaded = true
     const updatedAt = new Date().toISOString()
@@ -216,6 +210,164 @@ export function createStoryAnchorFromMission(slug: string, data: any): StoryAnch
     relevance: 1,
     full_text: fullText,
   }
+}
+
+export function createWarfarinAnchorsFromDetail(category: string, slug: string, data: any): StoryAnchor[] {
+  const scope = normalizeScope(category)
+  if (scope === 'missions') return [createStoryAnchorFromMission(slug, data)]
+  if (scope === 'baker') return createBakerAnchors(slug, data)
+  if (scope === 'tutorials') return createTutorialAnchors(slug, data)
+  if (scope === 'enemies') return createEnemyAnchors(slug, data)
+  if (scope === 'medals') return createMedalAnchors(slug, data)
+  if (scope === 'documents') return createRichContentAnchors(slug, data, scope, '中枢档案')
+  if (scope === 'lore') return createRichContentAnchors(slug, data, scope, '见闻辑录')
+  if (scope === 'operators') return createOperatorAnchors(slug, data)
+  if (scope === 'weapons') return createItemLikeAnchors(slug, data, scope, '武器资料')
+  if (scope === 'facilities') return createItemLikeAnchors(slug, data, scope, '设备信息')
+  if (scope === 'items') return createItemLikeAnchors(slug, data, scope, '物品信息')
+  if (scope === 'gear') return createItemLikeAnchors(slug, data, scope, '装备信息')
+  return createGenericAnchors(slug, data, scope)
+}
+
+function createBakerAnchors(slug: string, data: any): StoryAnchor[] {
+  const rows: WarfarinWikiContextResult['full_text'] = []
+  const speakerMap = new Map<string, string>([['endmin', '管理员']])
+  for (const [id, chat] of Object.entries(data?.SNSChatTable || {})) {
+    const name = stripTags((chat as any)?.name || '')
+    if (name) speakerMap.set(id, name)
+  }
+  const optionTable = data?.SNSDialogOptionTable || {}
+  for (const dialog of Object.values(data?.SNSDialogTable || {})) {
+    const contentData = (dialog as any)?.dialogContentData
+    if (!contentData || typeof contentData !== 'object') continue
+    const entries = Object.values(contentData).sort((a: any, b: any) => Number(a?.contentId || 0) - Number(b?.contentId || 0))
+    for (const entry of entries as any[]) {
+      const speaker = speakerMap.get(String(entry?.speaker || '')) || stripTags(entry?.speaker || '') || '旁白'
+      const text = stripTags(entry?.content || '')
+      if (text) rows.push({ speaker, text })
+      for (const optionId of Array.isArray(entry?.dialogOptionIds) ? entry.dialogOptionIds : []) {
+        const optionText = stripTags(optionTable?.[optionId]?.optionDesc || '')
+        if (optionText) rows.push({ speaker: '选项', text: optionText })
+      }
+    }
+  }
+  const name = stripTags(data?.summary?.name || data?.SNSDialogTopicTable?.topicName || '') || slug
+  return [makeStoryAnchor(slug, 0, rows.map(row => `${row.speaker}：${row.text}`).join('\n'), `Baker对话：${name}`, 'baker', rows)]
+}
+
+function createTutorialAnchors(slug: string, data: any): StoryAnchor[] {
+  const texts: string[] = []
+  for (const page of Object.values(data?.wikiTutorialPageTable || {})) {
+    texts.push(...extractFromTable(page, 'title', 'content'))
+  }
+  const name = firstText(Object.values(data?.wikiTutorialPageTable || {}).map((page: any) => page?.title)) || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `教程：${name}`, 'tutorials')]
+}
+
+function createEnemyAnchors(slug: string, data: any): StoryAnchor[] {
+  const display = data?.enemyTemplateDisplayInfoTable || {}
+  const texts = [...extractFromTable(display, 'name', 'description', 'nickname')]
+  for (const entry of Object.values(data?.enemyAbilityDescTable || {})) {
+    texts.push(...extractFromTable(entry, 'name', 'description'))
+  }
+  const name = stripTags(display?.name || '') || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `敌人资料：${name}`, 'enemies')]
+}
+
+function createMedalAnchors(slug: string, data: any): StoryAnchor[] {
+  const ach = data?.achievementTable || {}
+  const texts = [...extractFromTable(ach, 'name', 'desc', 'completeDesc')]
+  for (const level of Object.values(ach?.levelInfos || {})) {
+    texts.push(...extractFromTable(level, 'completeDesc'))
+    for (const cond of Array.isArray((level as any)?.conditions) ? (level as any).conditions : []) {
+      texts.push(...extractFromTable(cond, 'desc'))
+    }
+  }
+  texts.push(...extractFromTable(data?.achievementTypeTable, 'categoryName'))
+  const name = stripTags(ach?.name || '') || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `奖章信息：${name}`, 'medals')]
+}
+
+function createRichContentAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
+  const texts: string[] = []
+  for (const entry of Array.isArray(data?.richContentTable?.contentList) ? data.richContentTable.contentList : []) {
+    texts.push(...extractFromTable(entry, 'content'))
+  }
+  texts.push(...extractFromTable(data?.prtsAllItem, 'desc'))
+  const name = stripTags(data?.richContentTable?.title || data?.prtsDocument?.name || data?.prtsAllItem?.name || '') || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n\n'), `${label}：${name}`, scope)]
+}
+
+function createOperatorAnchors(slug: string, data: any): StoryAnchor[] {
+  const texts = [
+    ...extractFromTable(data?.characterTable, 'name', 'profileVoice'),
+    ...extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc'),
+  ]
+  const name = stripTags(data?.itemTable?.name || data?.characterTable?.name || '') || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `干员资料：${name}`, 'operators')]
+}
+
+function createItemLikeAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
+  const texts = [
+    ...extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc'),
+    ...extractFromTable(data?.factoryBuildingTable, 'name', 'desc'),
+  ]
+  const name = stripTags(data?.itemTable?.name || data?.factoryBuildingTable?.name || '') || slug
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `${label}：${name}`, scope)]
+}
+
+function createGenericAnchors(slug: string, data: any, scope: string): StoryAnchor[] {
+  const texts = collectTexts(data).map(stripTags).filter(Boolean)
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `资料：${slug}`, scope)]
+}
+
+function makeStoryAnchor(slug: string, index: number, content: string, source: string, scope: string, fullText?: WarfarinWikiContextResult['full_text']): StoryAnchor {
+  const text = String(content || '').trim()
+  return {
+    anchor_id: `${slug}_${index}`,
+    content: text,
+    source,
+    source_ref: source,
+    scope,
+    relevance: 1,
+    url: `https://warfarin.wiki/cn/${pagePathForScope(scope)}/${encodeURIComponent(slug)}`,
+    full_text: fullText?.length ? fullText : (text ? [{ speaker: '资料', text }] : []),
+  }
+}
+
+function extractFromTable(obj: any, ...fields: string[]) {
+  const results: string[] = []
+  if (!obj || typeof obj !== 'object') return results
+  for (const field of fields) {
+    const text = stripTags(obj[field] || '')
+    if (text) results.push(text)
+  }
+  return results
+}
+
+function collectTexts(obj: any, depth = 0): string[] {
+  if (depth > 20) return []
+  if (typeof obj === 'string') return [obj]
+  if (!obj || typeof obj !== 'object') return []
+  return Object.values(obj).flatMap(value => collectTexts(value, depth + 1))
+}
+
+function firstText(values: any[]) {
+  for (const value of values) {
+    const text = stripTags(value || '')
+    if (text) return text
+  }
+  return ''
+}
+
+function normalizeScope(category: string) {
+  const scope = String(category || '').trim().toLowerCase()
+  return scope === 'lorev2' ? 'lore' : scope
+}
+
+function pagePathForScope(scope: string) {
+  if (scope === 'documents') return 'lore'
+  return scope === 'lore' ? 'lore' : scope
 }
 
 function scoreStoryAnchor(anchor: StoryAnchor, needle: string) {

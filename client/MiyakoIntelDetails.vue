@@ -54,7 +54,7 @@
           <strong>{{ status.sites.warfarin }}</strong>
         </div>
         <div class="miyako-intel-nav__status">
-          <span>剧情 API</span>
+          <span>全文缓存</span>
           <strong>{{ status.sites.story }}</strong>
         </div>
         <div class="miyako-intel-nav__status">
@@ -68,6 +68,19 @@
         <div class="miyako-intel-nav__status">
           <span>资料搜索缓存</span>
           <strong>{{ searchCacheStatus }}</strong>
+        </div>
+        <button
+          type="button"
+          class="miyako-intel-nav__action"
+          :disabled="isUpdatingStory"
+          @click="updateStoryBundle"
+          @mousedown.stop
+          @touchstart.stop
+        >
+          {{ isUpdatingStory ? '拉取中...' : '拉取远端全文包' }}
+        </button>
+        <div v-if="storyUpdateMessage" class="miyako-intel-nav__message">
+          {{ storyUpdateMessage }}
         </div>
       </div>
     </div>
@@ -102,6 +115,8 @@ const current = inject<ComputedRef<CurrentSettings>>('manager.settings.current')
 const isOwn = computed(() => pluginName?.value === 'koishi-plugin-miyako-intel')
 const isCollapsed = ref(false)
 const activeItem = ref('')
+const isUpdatingStory = ref(false)
+const storyUpdateMessage = ref('')
 
 const mouse = reactive({
   moving: false,
@@ -153,6 +168,21 @@ async function loadStatus() {
     status.value = await send('miyako-intel/status') as typeof status.value
   } catch {
     status.value.sites = { prts: '未检查', warfarin: '未检查', story: '未检查' }
+  }
+}
+
+async function updateStoryBundle() {
+  if (isUpdatingStory.value) return
+  isUpdatingStory.value = true
+  storyUpdateMessage.value = ''
+  try {
+    const result = await send('miyako-intel/update-story') as { ok?: boolean; message?: string }
+    storyUpdateMessage.value = result?.message || (result?.ok ? '已完成。' : '拉取失败。')
+    await loadStatus()
+  } catch {
+    storyUpdateMessage.value = '拉取失败，请查看日志。'
+  } finally {
+    isUpdatingStory.value = false
   }
 }
 
@@ -403,6 +433,31 @@ onUnmounted(() => {
 
 .miyako-intel-nav__status span {
   color: var(--k-text-light);
+}
+
+.miyako-intel-nav__action {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 6px 12px;
+  padding: 7px 8px;
+  border: 1px solid var(--k-color-primary);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--k-color-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.miyako-intel-nav__action:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.miyako-intel-nav__message {
+  padding: 2px 12px 8px;
+  color: var(--k-text-light);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .miyako-intel-nav.is-collapsed {

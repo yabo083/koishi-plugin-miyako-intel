@@ -188,6 +188,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     prod: resolve(__dirname, '../dist'),
   })
   ctx.console?.addListener?.('miyako-intel/status', buildConsoleStatus)
+  ctx.console?.addListener?.('miyako-intel/update-story', runManualStoryUpdate)
   if (resolved.wiki.storySearchEnabled) {
     storySearch.load().catch((error) => logger.warn(`加载本地剧情文本失败：${formatError(error)}`))
     if (resolved.wiki.storyUpdateOnStart) runStoryUpdate('启动更新')
@@ -566,8 +567,9 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     storyUpdating = true
     try {
       const report = await storySearch.update()
-      if (report.warning) logger.warn(`Warfarin GitHub 剧情文本合集${reason}异常，继续使用本地缓存：${report.warning}`)
-      logger.info(`Warfarin 剧情文本${reason}完成：成功 ${report.success}，跳过 ${report.skipped}，重查 ${report.refreshed}，待补 ${report.pending}，失败 ${report.failed}。`)
+      storySearchCache.clear()
+      if (report.warning) logger.warn(`Warfarin GitHub 全文合集${reason}异常，继续使用本地缓存：${report.warning}`)
+      logger.info(`Warfarin 全文文本${reason}完成：成功 ${report.success}，跳过 ${report.skipped}，重查 ${report.refreshed}，待补 ${report.pending}，失败 ${report.failed}。`)
       return true
     } catch (error) {
       logger.warn(`Warfarin 剧情文本${reason}失败：${formatError(error)}`)
@@ -575,6 +577,15 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     } finally {
       storyUpdating = false
     }
+  }
+
+  async function runManualStoryUpdate() {
+    if (!resolved.wiki.storySearchEnabled) return { ok: false, message: 'Warfarin 本地全文搜索未启用。' }
+    if (storyUpdating) return { ok: false, message: 'Warfarin 全文包正在更新，请稍后。' }
+    const ok = await runStoryUpdate('手动拉取')
+    return ok
+      ? { ok: true, message: `已从远端拉取 Warfarin 全文包，本地 ${storySearch.size} 条。` }
+      : { ok: false, message: 'Warfarin 全文包拉取失败，请查看日志。' }
   }
 
   async function buildConsoleStatus() {

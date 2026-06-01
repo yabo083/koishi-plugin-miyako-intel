@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-miyako-intel",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Koishi plugin: Miyako-branded game intel cards with daily cache and scheduled push.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -138,9 +138,9 @@ OneBot / NapCat 群推送目标通常写成 `onebot:群号`，例如 `onebot:111
 
 Warfarin Wiki 检索默认内置官方 API 地址，并启用本地剧情/任务文本缓存。`language` 决定官方 API、详情直链和剧情数据语言，例如 `cn`、`en`。检索结果编号按用户和频道临时保存，默认 5 分钟过期；过期后可以重新执行 `w <关键词>`。
 
-剧情/任务全文搜索对用户无感：仍然使用 `w <关键词>`。插件随包内置一份压缩的中文剧情/任务文本种子数据；首次没有本地缓存时会先展开到 Koishi `baseDir/data/miyako-intel/warfarin-story`，不会让每个安装者都从源站全量拉取。后续更新只读取 `storyBundleManifestUrl` 指向的 GitHub Release manifest，只有远程 `sha256` 变化时才下载 `warfarin-story-cn.json.gz`，校验通过后解压为本地剧情文本缓存。远程合集不可用时，插件继续使用已有本地缓存或随包种子，不会自行访问 Warfarin 源站。
+Warfarin 全文搜索对用户无感：仍然使用 `w <关键词>`。插件随包内置一份压缩的中文剧情/任务文本种子数据；首次没有本地缓存时会先展开到 Koishi `baseDir/data/miyako-intel/warfarin-story`，不会让每个安装者都从源站全量拉取。后续更新只读取 `storyBundleManifestUrl` 指向的 GitHub Release manifest，只有远程 `sha256` 变化时才下载 `warfarin-story-cn.json.gz`，校验通过后解压为本地全文缓存。远程合集不可用时，插件继续使用已有本地缓存或随包种子，不会自行访问 Warfarin 源站。
 
-仓库内置 `.github/workflows/warfarin-story-bundle.yml`，默认每周运行一次，也支持手动触发。脚本会先读取 Warfarin 首页左下角“最后更新”日期，并与现有 release manifest 的 `sourceUpdatedAt` 比对；日期未变则直接跳过。日期变化时才集中从 Warfarin Wiki 源站生成 `warfarin-story-cn.json.gz` 和 `warfarin-story-cn.manifest.json`，再上传到 `warfarin-story-latest` release。普通部署者只请求 GitHub 上的 manifest 和压缩合集，不再各自全量拉取源站剧情文本。
+仓库内置 `.github/workflows/warfarin-story-bundle.yml`，默认每周运行一次，也支持手动触发。脚本集中读取 Warfarin 首页更新时间，并通过官方 API 异步差速抓取全站文本类别，包含任务剧情、Baker、教程、敌人、奖章、档案、干员、武器、物品、装备、设施与见闻辑录。脚本会保留上一版 bundle 的逐条 raw hash，未变化条目复用旧 anchors；新增或源数据变化的条目重新解析，最终仍上传到 `warfarin-story-latest` release 的同名 `warfarin-story-cn.json.gz` 和 manifest。普通部署者只请求 GitHub 上的 manifest 和压缩合集，不再各自全量拉取源站文本。
 
 插件会按关键词缓存完整响应，默认 10 分钟、最多 100 组；群聊翻页 `w+` / `w-` / `w+2` 和快捷详情 `w 息壤 2` 都读取本地缓存，不会重复请求官方 API。官方详情会在末尾追加源站直链，格式为 `https://warfarin.wiki/<language>/<type>/<slug>`。
 
@@ -171,7 +171,7 @@ Warfarin Wiki 检索默认内置官方 API 地址，并启用本地剧情/任务
 ## 运行要求
 
 - `prts d` / `prts s` 需要启用 Koishi `puppeteer` 服务。
-- `w` 官方资料检索需要能访问 Warfarin Wiki 官方搜索 API；剧情全文检索优先使用本地剧情文本缓存，自动更新默认访问 GitHub Release 压缩合集。运行中的插件不会自行访问 Warfarin Wiki 任务剧情接口。
+- `w` 官方资料检索需要能访问 Warfarin Wiki 官方搜索 API；全文检索优先使用本地 Warfarin 文本缓存，自动更新默认访问 GitHub Release 压缩合集。运行中的插件不会自行访问 Warfarin Wiki 源站文本接口。
 - Linux / Docker 环境建议安装中文字体，例如 Noto Sans CJK，避免截图出现方框字。
 
 ## 开发

@@ -212,6 +212,20 @@ test('formats story details without repeated source and includes mission code', 
   assert.match(text, /回忆中的师姐：对了，你这城里/)
 })
 
+test('formats non-dialog details with source page link', () => {
+  const { formatWikiContext } = loadWiki()
+
+  const text = formatWikiContext({
+    anchor: { anchor_id: 'eny_0007_mimicw_0', content: '潜地虬兽。腐蚀金属。', source: '敌人资料：潜地虬兽', scope: 'enemies', relevance: 1, url: 'https://warfarin.wiki/cn/enemies/eny_0007_mimicw' },
+    full_text: [{ speaker: '资料', text: '潜地虬兽。腐蚀金属。' }],
+    summary: null,
+    source_ref: '敌人资料：潜地虬兽',
+  })
+
+  assert.match(text, /名称：潜地虬兽 \\| 类型：敌人资料 \\| 来源：Warfarin Wiki/)
+  assert.match(text, /详情：https:\/\/warfarin\.wiki\/cn\/enemies\/eny_0007_mimicw/)
+})
+
 test('chatluna tool adapter exposes search and context tools', async () => {
   const { createWarfarinWikiTools } = loadWiki()
   const calls = []

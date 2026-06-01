@@ -1232,7 +1232,7 @@ test('story bundle update failures are logged by log level', async () => {
   })
   await new Promise((resolve) => setTimeout(resolve, 800))
 
-  assert.equal(loggerLines.some(([level, message]) => level === 'warn' && /GitHub 剧情文本合集/.test(message) && /github unreachable/.test(message)), true)
+  assert.equal(loggerLines.some(([level, message]) => level === 'warn' && /GitHub 全文合集/.test(message) && /github unreachable/.test(message)), true)
 })
 
 test('silent log level suppresses story bundle update warnings', async () => {
@@ -1295,11 +1295,12 @@ test('registers console client entry and status listener when console service is
   assert.equal(status.push.enabled, false)
   assert.equal(status.sites.prts, '可用')
   assert.equal(status.sites.warfarin, '可用')
-  assert.equal(status.sites.story, '本地 221 条')
+  assert.equal(status.sites.story, '本地 2319 条')
   assert.equal(status.cache.refreshCron, '5 4 * * *')
   assert.equal(status.cache.searchLabel, '4/100，10 分钟')
   assert.equal(status.cache.maintenanceCron, '30 4 * * *')
   assert.equal(status.cache.searchMaxEntries, 100)
+  assert.equal(listeners.has('miyako-intel/update-story'), true)
 })
 
 function createFailingPuppeteer() {
