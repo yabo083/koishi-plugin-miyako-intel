@@ -99,7 +99,7 @@ test('built-in story search replaces stale legacy local cache with bundled full-
 
 test('built-in story search replaces old expanded seed with current bundled seed version', async () => {
   const { WarfarinStorySearchService } = loadStorySearch()
-  const { bundledStorySeedCount } = require(path.join(rootDir, 'lib', 'services', 'warfarin-story-seed.js'))
+  const { bundledStorySeedCount, bundledStorySeedVersion } = require(path.join(rootDir, 'lib', 'services', 'warfarin-story-seed.js'))
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-old-seed-'))
   const root = path.join(baseDir, 'story-cache', 'cn')
   const anchorsDir = path.join(root, 'anchors')
@@ -126,7 +126,7 @@ test('built-in story search replaces old expanded seed with current bundled seed
   assert.match(baker.full_text[0].text, / \| /)
   assert.match(baker.anchor.content, /管理员：狼卫，你该去休息一下了。/)
   assert.doesNotMatch(medal.anchor.content, /探索任务奖章/)
-  assert.equal(manifest.bundledStorySeedVersion, 2)
+  assert.equal(manifest.bundledStorySeedVersion, bundledStorySeedVersion)
 })
 
 test('built-in story search updates from remote compressed story text bundle', async () => {
@@ -467,6 +467,25 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
   assert.doesNotMatch(medal[0].content, /探索任务奖章/)
   assert.equal(tutorial[0].source, '教程：理智')
   assert.match(tutorial[0].content, /消耗理智/)
+})
+
+test('Warfarin mission parser sorts radio blocks by natural radio id order', () => {
+  const { createStoryAnchorFromMission } = loadStorySearch()
+
+  const anchor = createStoryAnchorFromMission('a1m9', {
+    mission: { name: '武陵特厨' },
+    dialog: [{ actorName: '主持人', dialogText: '你好，管理员，你做的美食真让人印象深刻啊。' }],
+    radios: [
+      { radioId: 'radio_a1m9_2', messages: [{ index: 1, actorName: '管理员', radioText: '快到提交决赛作品的时间了……但还是没什么头绪。' }] },
+      { radioId: 'radio_a1m9_1', messages: [{ index: 1, actorName: '管理员', radioText: '那是……维尔莫林？他似乎在叫我过去。' }] },
+    ],
+  })
+
+  assert.ok(anchor.content.indexOf('那是……维尔莫林') < anchor.content.indexOf('快到提交决赛作品'))
+  assert.deepEqual(anchor.full_text.slice(1), [
+    { scene: '通讯中', speaker: '管理员', text: '那是……维尔莫林？他似乎在叫我过去。' },
+    { scene: '通讯中', speaker: '管理员', text: '快到提交决赛作品的时间了……但还是没什么头绪。' },
+  ])
 })
 
 function jsonResponse(payload) {

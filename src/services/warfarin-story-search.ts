@@ -221,8 +221,8 @@ export function createStoryAnchorFromMission(slug: string, data: any): StoryAnch
     texts.push(`${speaker}：${text}`)
     fullText.push({ speaker, text })
   }
-  for (const radio of Array.isArray(data?.radios) ? data.radios : []) {
-    for (const message of Array.isArray(radio?.messages) ? radio.messages : []) {
+  for (const radio of sortRadios(data?.radios)) {
+    for (const message of sortRadioMessages(radio?.messages)) {
       const text = stripTags(message?.radioText || '')
       if (!text) continue
       const speaker = stripTags(message?.actorName || '') || '通讯'
@@ -405,6 +405,18 @@ function normalizeScope(category: string) {
 function pagePathForScope(scope: string) {
   if (scope === 'documents') return 'lore'
   return scope === 'lore' ? 'lore' : scope
+}
+
+function sortRadios(radios: any) {
+  return (Array.isArray(radios) ? [...radios] : []).sort((a, b) => naturalKey(a?.radioId).localeCompare(naturalKey(b?.radioId)))
+}
+
+function sortRadioMessages(messages: any) {
+  return (Array.isArray(messages) ? [...messages] : []).sort((a, b) => Number(a?.index || 0) - Number(b?.index || 0))
+}
+
+function naturalKey(value: unknown) {
+  return String(value || '').replace(/\d+/g, (part) => part.padStart(8, '0'))
 }
 
 function scoreStoryAnchor(anchor: StoryAnchor, needle: string) {
