@@ -30,7 +30,10 @@ const startedAt = Date.now()
 log(`Warfarin story bundle start: language=${language} categories=${categories.join(',')} concurrency=${concurrency} rateLimitMs=${rateLimitMs} timeoutMs=${timeoutMs}`)
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
-const previousManifest = await fetchJson(manifestUrl).catch(() => null)
+const previousManifest = await fetchJson(manifestUrl).catch((error) => {
+  log(`Warfarin story bundle previous manifest unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  return null
+})
 if (shouldDelaySourceUpdate(previousManifest)) {
   await mkdir(outDir, { recursive: true })
   await writeFile(joinPath(outDir, 'skipped.json'), JSON.stringify({ skipped: true, delayed: true, sourceUpdatedAt, previousSourceUpdatedAt: previousManifest?.sourceUpdatedAt || '', delayHours: sourceUpdateDelayHours }, null, 2))
@@ -365,6 +368,9 @@ function decodeHtml(input) {
 }
 
 async function fetchWithTimeout(url) {
+  if (process.env.STORY_GITHUB_FETCHER === 'curl' && isGitHubReleaseDownload(url)) {
+    return fetchWithCurl(url)
+  }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -374,6 +380,36 @@ async function fetchWithTimeout(url) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+function fetchWithCurl(url) {
+  return new Promise((resolve, reject) => {
+    const args = ['-fsSL', '--retry', '2', '--max-time', String(Math.max(1, Math.ceil(timeoutMs / 1000))), url]
+    const child = spawn('curl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = []
+    let stderr = ''
+    child.stdout.on('data', chunk => stdout.push(Buffer.from(chunk)))
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) return resolve(bufferResponse(Buffer.concat(stdout)))
+      reject(new Error(`curl ${url} exited ${code}${stderr ? `: ${stderr.trim().slice(0, 300)}` : ''}`))
+    })
+  })
+}
+
+function bufferResponse(buffer) {
+  return {
+    ok: true,
+    status: 200,
+    async text() { return buffer.toString('utf8') },
+    async json() { return JSON.parse(buffer.toString('utf8')) },
+    async arrayBuffer() { return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) },
+  }
+}
+
+function isGitHubReleaseDownload(url) {
+  return String(url || '').startsWith(`https://github.com/${repository}/releases/download/`)
 }
 
 function requestHeaders(url) {

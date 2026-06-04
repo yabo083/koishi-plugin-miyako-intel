@@ -42,6 +42,8 @@ jobs:
           STORY_UPDATE_RATE_LIMIT_MS: "300"
           STORY_UPDATE_CONCURRENCY: "3"
           STORY_SOURCE_UPDATE_DELAY_HOURS: "24"
+          NODE_USE_ENV_PROXY: "1"
+          STORY_GITHUB_FETCHER: "curl"
           STORY_FORCE_DEEP_CHECK: ${{ github.event.inputs.force_deep_check == 'true' && '1' || '0' }}
           STORY_CATEGORIES: ${{ github.event.inputs.categories }}
         run: node scripts/build-warfarin-story-bundle.mjs

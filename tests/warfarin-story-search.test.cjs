@@ -413,6 +413,8 @@ test('story bundle workflow sets friendly pacing defaults', () => {
   assert.match(workflow, /STORY_UPDATE_CONCURRENCY:\s*"3"/)
   assert.match(workflow, /runs-on:\s*\[self-hosted, linux, warfarin-story\]/)
   assert.match(workflow, /STORY_SOURCE_UPDATE_DELAY_HOURS:\s*"24"/)
+  assert.match(workflow, /NODE_USE_ENV_PROXY:\s*"1"/)
+  assert.match(workflow, /STORY_GITHUB_FETCHER:\s*"curl"/)
   assert.match(workflow, /force_deep_check:/)
   assert.match(workflow, /STORY_FORCE_DEEP_CHECK:/)
   assert.match(workflow, /STORY_CATEGORIES:/)
