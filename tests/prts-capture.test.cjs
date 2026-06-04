@@ -204,12 +204,13 @@ test('registers only the daily Koishi dot command', async () => {
 
   apply(ctx, defaultConfig)
 
-  assert.deepEqual(registeredCommands, ['prts', 'w <input:text>', 'w+', 'w+<page:number>', 'w-'])
+  assert.deepEqual(registeredCommands, ['prts', 'w <input:text>', 'wn <input:text>', 'w+', 'w+<page:number>', 'w-'])
 
   const handler = commandHandlers.get('prts.d')
   assert.equal(typeof handler, 'function')
   assert.equal(commandHandlers.has('prts.e'), false)
   assert.equal(commandHandlers.has('w <input:text>'), true)
+  assert.equal(commandHandlers.has('wn <input:text>'), true)
   assert.equal(commandHandlers.has('w+'), true)
   assert.equal(commandHandlers.has('w+<page:number>'), true)
   assert.equal(commandHandlers.has('w-'), true)
@@ -382,6 +383,56 @@ test('warfarin wiki empty search clears previous numbered anchors', async () => 
 
   assert.match(text, /请先使用 w 关键词/)
   assert.equal(requests.some((item) => item.url.endsWith('/api/v1/search/context')), false)
+})
+
+test('warfarin wiki wn command force-searches numeric keywords without changing w number detail', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url) => {
+      requests.push(url)
+      if (url.includes('story.example')) return { query: '', total: 0, results: [] }
+      if (url.includes('q=%E6%81%AF%E5%A3%A4')) {
+        return {
+          query: '息壤',
+          results: Array.from({ length: 7 }, (_, index) => ({
+            slug: `text_${index + 1}`,
+            name: `息壤资料${index + 1}`,
+            type: 'lore',
+            category: '见闻辑录',
+            snippet: `第 ${index + 1} 条息壤相关资料。`,
+            score: 10 - index,
+          })),
+        }
+      }
+      return {
+        query: '321',
+        results: [
+          { slug: 'num_321', name: '321号记录', type: 'lore', category: '中枢档案', snippet: '编号 321 的测试记录。', score: 10 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const forceSearch = commandHandlers.get('wn <input:text>')
+  const session = createSession()
+  await search({ session, options: {} }, '息壤')
+  const oldNumberBehavior = await search({ session, options: {} }, '1')
+  const numericSearch = await forceSearch({ session, options: {} }, '321')
+
+  assert.match(oldNumberBehavior, /名称：息壤资料1 \| 类型：见闻辑录 \| 来源：Warfarin Wiki/)
+  assert.match(numericSearch, /Warfarin Wiki 检索：321/)
+  assert.match(numericSearch, /中枢档案：321号记录/)
+  assert.equal(requests.some((url) => String(url).includes('q=321')), true)
 })
 
 test('warfarin wiki official detail uses local snippet without context request', async () => {
@@ -708,6 +759,91 @@ test('warfarin wiki keyword number shortcut works after story fallback', async (
   assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E9%99%86%E4%BB%A4%E9%A6%99')
   assert.equal(requests[1].url, 'http://story.example/api/v1/cn/search?q=%E9%99%86%E4%BB%A4%E9%A6%99&scope=missions')
   assert.equal(requests[2].body.anchor_id, 'story_5')
+})
+
+test('warfarin wiki group replies can be sent as OneBot forward messages', async () => {
+  const { apply } = loadPlugin()
+  const forwardCalls = []
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({
+    http: async (url) => {
+      if (url.includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return {
+        query: '息壤',
+        results: [
+          { slug: 'text_v0d8_24', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤是一种用于遏制侵蚀的新材料。', score: 56 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+      groupForwardEnabled: true,
+    },
+  })
+
+  const session = createSession()
+  session.platform = 'onebot'
+  session.guildId = '10001'
+  session.channelId = '10001'
+  session.onebot = {
+    async sendGroupForwardMsg(groupId, messages) {
+      forwardCalls.push({ groupId, messages })
+    },
+  }
+
+  const search = commandHandlers.get('w <input:text>')
+  const result = await search({ session, options: {} }, '息壤')
+
+  assert.equal(result, undefined)
+  assert.equal(sent.length, 0)
+  assert.equal(forwardCalls.length, 1)
+  assert.equal(forwardCalls[0].groupId, '10001')
+  assert.match(forwardCalls[0].messages[0].data.content, /Warfarin Wiki 检索：息壤/)
+  assert.match(forwardCalls[0].messages[0].data.content, /中枢档案：息壤/)
+})
+
+test('warfarin wiki group forward falls back to plain text when adapter send fails', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async (url) => {
+      if (url.includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return {
+        query: '息壤',
+        results: [
+          { slug: 'text_v0d8_24', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤是一种用于遏制侵蚀的新材料。', score: 56 },
+        ],
+      }
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: false,
+      groupForwardEnabled: true,
+    },
+  })
+
+  const session = createSession()
+  session.platform = 'onebot'
+  session.guildId = '10001'
+  session.channelId = '10001'
+  session.onebot = {
+    async sendGroupForwardMsg() {
+      throw new Error('forward unavailable')
+    },
+  }
+
+  const search = commandHandlers.get('w <input:text>')
+  const result = await search({ session, options: {} }, '息壤')
+
+  assert.match(result, /Warfarin Wiki 检索：息壤/)
+  assert.match(result, /中枢档案：息壤/)
 })
 
 test('summary command sends reusable daily text without image capture duplication', async () => {

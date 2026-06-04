@@ -44,6 +44,10 @@ export interface WarfarinWikiConfig {
   searchCacheMaxEntries: number
   pageSize: number
   selectionTtlMs: number
+  groupForwardEnabled: boolean
+  groupForwardNodeLineLimit: number
+  groupForwardSenderName: string
+  groupForwardSenderUin: string
 }
 
 export type WarfarinWikiMode = 'official' | 'anchor'

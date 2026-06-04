@@ -19,7 +19,7 @@ export const usage = `
   <li><code>prts d</code> 发送首页「今日信息」整合图。</li>
   <li><code>prts s</code> 发送首页「今日信息」规则摘要文本。</li>
   <li><code>prts cache</code> 查看缓存诊断与维护状态。</li>
-  <li><code>w 息壤</code> 检索 Warfarin Wiki；<code>w 1</code> 查看结果，<code>w+</code> 翻页，<code>w+2</code> 跳页。</li>
+  <li><code>w 息壤</code> 检索 Warfarin Wiki；<code>w 1</code> 查看结果，<code>w+</code> 翻页，<code>w+2</code> 跳页；<code>wn 321</code> 强制搜索纯数字关键词。</li>
   <li><code>prts r d</code> 强制刷新今日截图缓存；<code>prts r s</code> 强制刷新并发送今日摘要。</li>
   <li><code>prts h</code> 查看命令帮助。</li>
 </ul>
@@ -149,6 +149,10 @@ export const Config = Schema.intersect([
       searchCacheMaxEntries: Schema.number().min(1).max(1000).default(100).description('搜索缓存最大数量。'),
       pageSize: Schema.number().min(1).max(10).default(5).description('每页显示结果数。'),
       selectionTtlMs: Schema.number().min(30000).max(3600000).default(300000).description('编号选择保留时间，单位毫秒。'),
+      groupForwardEnabled: Schema.boolean().default(false).description('群聊中是否将 Warfarin 查询回复作为 OneBot/NapCat 合并转发发送。失败时自动回退普通文本。'),
+      groupForwardNodeLineLimit: Schema.number().min(3).max(80).default(20).description('合并转发每个节点最多包含多少行文本。'),
+      groupForwardSenderName: Schema.string().default('Warfarin Wiki').description('合并转发节点显示昵称。'),
+      groupForwardSenderUin: Schema.string().default('2854196310').description('合并转发节点显示 QQ 号。'),
     }).description('Warfarin 资料检索'),
   }).description('Warfarin 资料检索'),
 ]) as Schema<RuntimeConfig>
@@ -244,32 +248,36 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     .action(() => buildCacheDiagnostics())
 
   ctx.command('w <input:text>', '检索 Warfarin Wiki 终末地资料')
-    .action(async ({ session }, input?: string) => handleWikiInput(session, input || ''))
+    .action(async ({ session }, input?: string) => sendWikiReply(session, () => handleWikiInput(session, input || '')))
+
+  ctx.command('wn <input:text>', '按关键词检索 Warfarin Wiki，纯数字也按搜索处理')
+    .action(async ({ session }, input?: string) => sendWikiReply(session, () => searchWiki(session, input || '')))
 
   ctx.command('w+', '显示下一页 Warfarin Wiki 检索结果')
-    .action(async ({ session }) => pageWiki(session, 1))
+    .action(async ({ session }) => sendWikiReply(session, () => pageWiki(session, 1)))
 
   ctx.command('w+<page:number>', '跳转到指定页 Warfarin Wiki 检索结果')
-    .action(async ({ session }, page?: number) => pageWikiPage(session, page))
+    .action(async ({ session }, page?: number) => sendWikiReply(session, () => pageWikiPage(session, page)))
 
   ctx.command('w-', '显示上一页 Warfarin Wiki 检索结果')
-    .action(async ({ session }) => pageWiki(session, -1))
+    .action(async ({ session }) => sendWikiReply(session, () => pageWiki(session, -1)))
 
   ctx.middleware(async (session, next) => {
     const content = String(session?.stripped?.content ?? session?.content ?? '').trim()
     const match = content.match(/^w\+([1-9]\d*)$/)
     if (!match) return next()
     const text = await pageWikiPage(session, Number(match[1]))
-    if (text) await session.send(text)
+    const fallback = text ? await sendWikiText(session, text) : ''
+    if (fallback) await session.send(fallback)
   })
 
   root.subcommand('.w <keyword:text>', '检索明日方舟：终末地资料')
     .alias('.wiki')
-    .action(async ({ session }, keyword?: string) => searchWiki(session, keyword || ''))
+    .action(async ({ session }, keyword?: string) => sendWikiReply(session, () => searchWiki(session, keyword || '')))
 
   root.subcommand('.wc [target:string]', '查看终末地资料上下文')
     .alias('.wiki-context')
-    .action(async ({ session }, target?: string) => showWikiContext(session, target || ''))
+    .action(async ({ session }, target?: string) => sendWikiReply(session, () => showWikiContext(session, target || '')))
 
   root.subcommand('.r [target:string]', '强制刷新 PRTS 截图缓存')
     .alias('.refresh', '.reset')
@@ -503,6 +511,30 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
   }
 
+  async function sendWikiReply(session: any, createText: () => Promise<string> | string) {
+    const text = await createText()
+    return sendWikiText(session, text)
+  }
+
+  async function sendWikiText(session: any, text: string) {
+    if (!text) return text
+    if (!shouldSendWikiForward(session)) return text
+    try {
+      const sent = await sendOneBotGroupForward(session, text, resolved.wiki)
+      if (sent) return undefined
+    } catch (error) {
+      logger.warn(`Warfarin Wiki 合并转发发送失败，回退普通文本：${formatError(error)}`)
+    }
+    return text
+  }
+
+  function shouldSendWikiForward(session: any) {
+    if (!resolved.wiki.groupForwardEnabled || !session) return false
+    if (session.guildId || session.subtype === 'group') return true
+    if (session.platform === 'onebot' && session.channelId && session.channelId !== session.userId) return true
+    return false
+  }
+
   function resolveWikiAnchor(session: any, target: string, source?: WikiSearchSource) {
     pruneWikiSelections()
     const normalized = String(target || '').trim()
@@ -665,6 +697,7 @@ function buildHelp() {
     'prts cache：查看缓存根目录、当前日切和最近缓存',
     'w <关键词>：检索 Warfarin Wiki 终末地资料',
     'w <编号>：查看上一轮检索结果详情；w+ / w- 翻页；w+页码 跳页',
+    'wn <关键词>：强制按关键词搜索，适合搜索纯数字内容',
     'prts r [d|s|all]：强制刷新今日信息截图或摘要，默认 all',
     'prts h：查看帮助',
     '缓存按 04:00 日切；当天重复请求会直接读取本地缓存。',
@@ -734,6 +767,10 @@ function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfig {
       searchCacheMaxEntries: config.wiki?.searchCacheMaxEntries ?? 100,
       pageSize: config.wiki?.pageSize ?? 5,
       selectionTtlMs: config.wiki?.selectionTtlMs ?? 300000,
+      groupForwardEnabled: config.wiki?.groupForwardEnabled ?? false,
+      groupForwardNodeLineLimit: config.wiki?.groupForwardNodeLineLimit ?? 20,
+      groupForwardSenderName: config.wiki?.groupForwardSenderName || 'Warfarin Wiki',
+      groupForwardSenderUin: config.wiki?.groupForwardSenderUin || '2854196310',
     },
     now: config.now || undefined,
   }
@@ -795,6 +832,44 @@ function formatSearchCacheStatus(ttlMs: number, entries: number, maxEntries: num
   if (!ttlMs) return '关闭'
   const minutes = Math.max(1, Math.round(ttlMs / 60000))
   return `${entries}/${maxEntries}，${minutes} 分钟`
+}
+
+async function sendOneBotGroupForward(session: any, text: string, wikiConfig: RuntimeConfig['wiki']) {
+  const groupId = session?.guildId || session?.channelId || session?.cid
+  if (!groupId) return false
+  const messages = buildOneBotForwardNodes(text, wikiConfig)
+  const onebot = session?.onebot || session?.bot?.internal
+  if (onebot?.sendGroupForwardMsg) {
+    await onebot.sendGroupForwardMsg(groupId, messages)
+    return true
+  }
+  if (onebot?.send_group_forward_msg) {
+    await onebot.send_group_forward_msg({ group_id: normalizeOneBotId(groupId), messages })
+    return true
+  }
+  return false
+}
+
+function buildOneBotForwardNodes(text: string, wikiConfig: RuntimeConfig['wiki']) {
+  const lines = String(text || '').split(/\r?\n/)
+  const limit = Math.max(3, Math.min(80, Number(wikiConfig.groupForwardNodeLineLimit || 20)))
+  const chunks: string[] = []
+  for (let index = 0; index < lines.length; index += limit) {
+    chunks.push(lines.slice(index, index + limit).join('\n').trim())
+  }
+  return chunks.filter(Boolean).map((content) => ({
+    type: 'node',
+    data: {
+      name: wikiConfig.groupForwardSenderName || 'Warfarin Wiki',
+      uin: normalizeOneBotId(wikiConfig.groupForwardSenderUin || '2854196310'),
+      content,
+    },
+  }))
+}
+
+function normalizeOneBotId(value: unknown) {
+  const text = String(value || '').trim()
+  return /^\d+$/.test(text) ? Number(text) : text
 }
 
 function createKoishiHttpFetch(http: any, timeoutMs: number) {
