@@ -169,6 +169,29 @@ test('calculates PRTS cache day by 04:00 Asia/Shanghai boundary', () => {
   assert.equal(getPrtsDayKey(new Date('2026-04-28T20:00:00.000Z'), 'Asia/Shanghai', 4), '2026-04-29')
 })
 
+test('cron matcher supports annual schedules by matching current minute only', () => {
+  const { matchesCronExpression } = require(path.join(rootDir, 'lib', 'services', 'cron.js'))
+
+  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 0, hour: 0, day: 1, month: 1, weekday: 4 }), true)
+  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 1, hour: 0, day: 1, month: 1, weekday: 4 }), false)
+  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 0, hour: 0, day: 1, month: 2, weekday: 0 }), false)
+})
+
+test('background cron jobs are polled with a fixed one-minute interval', () => {
+  const { apply } = loadPlugin()
+  const mock = createMockContext({ http: async () => ({ data: [] }) })
+
+  apply(mock.ctx, {
+    ...defaultConfig,
+    refreshCron: '0 0 1 1 *',
+    cacheMaintenance: { ...defaultConfig.cacheMaintenance, archiveCron: '0 0 1 1 *' },
+    scheduledPush: { ...defaultConfig.scheduledPush, enabled: true, channels: ['onebot:100'], cron: '0 0 1 1 *' },
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: true, storyUpdateCron: '0 0 1 1 *' },
+  })
+
+  assert.deepEqual(mock.intervals.map((item) => item.ms), [60 * 1000])
+})
+
 test('config guide stays compact and shows onebot channel example', () => {
   const { Config, usage } = loadPlugin()
   const json = JSON.stringify(Config)
