@@ -126,6 +126,14 @@ export class WarfarinStorySearchService {
     return this.anchors.length
   }
 
+  async getDataUpdatedLabel() {
+    const manifest = await this.readLocalManifest()
+    const value = formatStoryBundleDate(String(manifest?.storyBundleSourceUpdatedAt || manifest?.storyBundleUpdatedAt || '').trim())
+    if (value) return value
+    if (manifest?.bundledStorySeedVersion || manifest?.seeded) return '随包种子，未拉取远端合集'
+    return ''
+  }
+
   private async ensureLoaded() {
     if (!this.loaded) await this.load()
   }
@@ -168,7 +176,7 @@ export class WarfarinStorySearchService {
     this.loaded = true
     const updatedAt = new Date().toISOString()
     await mkdir(join(this.root, this.language), { recursive: true })
-    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, storyBundleSha256: sha256, storyBundleUpdatedAt: manifest?.updatedAt || '' }, null, 2))
+    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, storyBundleSha256: sha256, storyBundleUpdatedAt: manifest?.updatedAt || '', storyBundleSourceUpdatedAt: manifest?.sourceUpdatedAt || '' }, null, 2))
     return { success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, updatedAt }
   }
 
@@ -479,6 +487,13 @@ async function readBuffer(response: any): Promise<Buffer> {
 
 function deriveBundleUrl(manifestUrl: string) {
   return manifestUrl.endsWith('.manifest.json') ? manifestUrl.slice(0, -'.manifest.json'.length) + '.json.gz' : ''
+}
+
+function formatStoryBundleDate(value: string) {
+  if (!value) return ''
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return ''
+  return `${match[1]}年${match[2]}月${match[3]}日`
 }
 
 function formatUpdateWarning(error: unknown) {

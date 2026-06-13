@@ -177,12 +177,14 @@ export class WarfarinWikiClient {
 
 export const defaultUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36 miyako-intel'
 
-export function formatWikiSearchResults(result: WarfarinWikiSearchResult & { keyword: string; offset?: number; pageSize?: number; commandName?: string; sourceLabel?: string; showSourceLabel?: boolean }) {
+export function formatWikiSearchResults(result: WarfarinWikiSearchResult & { keyword: string; offset?: number; pageSize?: number; commandName?: string; sourceLabel?: string; showSourceLabel?: boolean; dataUpdatedLabel?: string }) {
   const keyword = normalizeKeyword(result.keyword)
   const commandName = result.commandName || 'w'
   const sourceLabel = result.sourceLabel || 'Warfarin Wiki 官方搜索'
   const showSourceLabel = result.showSourceLabel !== false
-  if (!result.results.length) return [`Warfarin Wiki 检索：${keyword}`, showSourceLabel ? `信息源：${sourceLabel}` : '', '没有找到相关资料。'].filter(Boolean).join('\n')
+  const dataUpdatedLabel = String(result.dataUpdatedLabel || '').trim()
+  const dataUpdatedLine = dataUpdatedLabel ? `数据更新时间：${dataUpdatedLabel}` : ''
+  if (!result.results.length) return [`Warfarin Wiki 检索：${keyword}`, dataUpdatedLine, showSourceLabel ? `信息源：${sourceLabel}` : '', '没有找到相关资料。'].filter(Boolean).join('\n')
   const offset = clampInteger(result.offset, 0, 0, Math.max(0, result.results.length - 1))
   const pageSize = clampInteger(result.pageSize, 5, 1, 20)
   const visible = result.results.slice(offset, offset + pageSize)
@@ -190,9 +192,10 @@ export function formatWikiSearchResults(result: WarfarinWikiSearchResult & { key
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const lines = [
     `Warfarin Wiki 检索：${keyword} | 共 ${total} 条，可用页码 [1-${totalPages}] | 输入 ${commandName} 序号 查看，${commandName}+ 下一页，${commandName}- 上一页，${commandName}+页码 跳页。`,
+    dataUpdatedLine,
     showSourceLabel ? `信息源：${sourceLabel}` : '',
     '',
-  ].filter((line, index) => line || index === 2)
+  ].filter((line, index) => line || index === 3)
 
   visible.forEach((item, index) => {
     lines.push(`${offset + index + 1}. ${formatWikiSourceTitle(item)}`)

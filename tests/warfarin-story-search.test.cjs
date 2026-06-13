@@ -177,6 +177,56 @@ test('built-in story search updates from remote compressed story text bundle', a
   assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'bundle.json')), true)
 })
 
+test('built-in story search exposes remote bundle data update date', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-bundle-date-'))
+  const anchors = [{
+    anchor_id: 'c27m5_0',
+    content: '管理员：火锅会让大家暖和起来。',
+    source: '任务剧情：共饮一江水',
+    source_ref: '任务剧情：共饮一江水',
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: '火锅会让大家暖和起来。' }],
+  }]
+  const bundle = zlib.gzipSync(JSON.stringify(anchors))
+  const sha256 = crypto.createHash('sha256').update(bundle).digest('hex')
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    fetch: async (url) => {
+      if (String(url).endsWith('.manifest.json')) return jsonResponse({ language: 'cn', count: 1, updatedAt: '2026-05-31T18:22:33.000Z', sourceUpdatedAt: '2026-05-14', sha256, url: 'https://example.test/warfarin-story-cn.json.gz' })
+      if (String(url).endsWith('.json.gz')) return bufferResponse(bundle)
+      throw new Error(`source update should not be called: ${url}`)
+    },
+  })
+
+  await service.update()
+
+  assert.equal(await service.getDataUpdatedLabel(), '2026年05月14日')
+})
+
+test('built-in story search reports bundled seed when remote bundle date is unavailable', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-seed-date-'))
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    timeoutMs: 1000,
+    fetch: async (url) => {
+      throw new Error(`seed load should not fetch: ${url}`)
+    },
+  })
+
+  await service.load()
+
+  assert.equal(await service.getDataUpdatedLabel(), '随包种子，未拉取远端合集')
+})
+
 test('built-in story search stores full-text bundle anchors without underscore collisions', async () => {
   const { WarfarinStorySearchService } = loadStorySearch()
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-full-bundle-'))

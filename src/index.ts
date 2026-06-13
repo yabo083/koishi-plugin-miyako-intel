@@ -178,7 +178,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
   const wikiClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.baseUrl, mode: resolved.wiki.mode, language: resolved.wiki.language, userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
   const storyClient = new WarfarinWikiClient({ baseUrl: resolved.wiki.storyBaseUrl, mode: 'story', language: resolved.wiki.storyLanguage, scopes: storyScopes, pageBaseUrl: '', userAgent: resolved.wiki.userAgent, timeoutMs: resolved.wiki.timeoutMs, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
   const storySearch = new WarfarinStorySearchService({ baseDir: ctx.baseDir, dataDirectory: resolved.wiki.storyDataDirectory, language: resolved.wiki.storyLanguage, timeoutMs: resolved.wiki.timeoutMs, bundleManifestUrl: resolved.wiki.storyBundleManifestUrl, fetch: createKoishiHttpFetch(ctx.http, resolved.wiki.timeoutMs) })
-  const wikiSelections = new Map<string, { expiresAt: number; keyword: string; offset: number; total: number; results: SelectedWikiAnchor[] }>()
+  const wikiSelections = new Map<string, { expiresAt: number; keyword: string; offset: number; total: number; results: SelectedWikiAnchor[]; dataUpdatedLabel?: string }>()
   const wikiSearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
   const storySearchCache = new Map<string, { expiresAt: number; result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number } }>()
   let lastPushedDayKey = ''
@@ -363,8 +363,9 @@ export function apply(ctx: Context, config: RuntimeConfig) {
       const result = source === 'story'
         ? tagWikiSearchResult(await getCachedWikiSearch(normalizedKeyword, 'story'), 'story')
         : await searchAllWikiSources(normalizedKeyword)
-      wikiSelections.set(getWikiSelectionKey(session), { expiresAt: Date.now() + resolved.wiki.selectionTtlMs, keyword: normalizedKeyword, offset: 0, total: result.total, results: result.results })
-      return formatWikiSearchResults({ ...result, keyword: normalizedKeyword, offset: 0, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+      const dataUpdatedLabel = await getStoryDataUpdatedLabel()
+      wikiSelections.set(getWikiSelectionKey(session), { expiresAt: Date.now() + resolved.wiki.selectionTtlMs, keyword: normalizedKeyword, offset: 0, total: result.total, results: result.results, dataUpdatedLabel })
+      return formatWikiSearchResults({ ...result, keyword: normalizedKeyword, offset: 0, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false, dataUpdatedLabel })
     } catch (error) {
       logger.warn(`${source === 'story' ? '剧情/任务全文' : '终末地资料'}检索失败：${formatError(error)}`)
       return formatWikiCommandError(error, source === 'story' ? '剧情/任务检索暂时不可用，请稍后重试。' : '资料检索暂时不可用，请稍后重试。')
@@ -408,6 +409,11 @@ export function apply(ctx: Context, config: RuntimeConfig) {
       if (local.results.length) return local
     }
     return storyClient.search({ keyword })
+  }
+
+  async function getStoryDataUpdatedLabel() {
+    if (!resolved.wiki.storySearchEnabled) return ''
+    return storySearch.getDataUpdatedLabel().catch(() => '')
   }
 
   function tagWikiSearchResult(result: { results: WarfarinWikiAnchor[]; total: number; took_ms: number }, source: WikiSearchSource) {
@@ -495,7 +501,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     const nextOffset = Math.min(Math.max(0, cached.offset + direction * resolved.wiki.pageSize), lastPageOffset)
     cached.offset = nextOffset
     cached.expiresAt = Date.now() + resolved.wiki.selectionTtlMs
-    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false, dataUpdatedLabel: cached.dataUpdatedLabel })
   }
 
   async function pageWikiPage(session: any, page: unknown) {
@@ -508,7 +514,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     const lastPage = Math.max(1, Math.ceil(cached.results.length / resolved.wiki.pageSize))
     cached.offset = (Math.min(pageNumber, lastPage) - 1) * resolved.wiki.pageSize
     cached.expiresAt = Date.now() + resolved.wiki.selectionTtlMs
-    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false })
+    return formatWikiSearchResults({ results: cached.results, total: cached.total, took_ms: 0, keyword: cached.keyword, offset: cached.offset, pageSize: resolved.wiki.pageSize, commandName: 'w', sourceLabel: '综合搜索', showSourceLabel: false, dataUpdatedLabel: cached.dataUpdatedLabel })
   }
 
   async function sendWikiReply(session: any, createText: () => Promise<string> | string) {

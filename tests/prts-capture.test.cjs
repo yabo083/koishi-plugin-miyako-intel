@@ -370,6 +370,48 @@ test('warfarin wiki supports compact w+page jump input', async () => {
   assert.equal(requests.length, 2)
 })
 
+test('warfarin wiki search displays local story bundle data update date across pages', async () => {
+  const { apply } = loadPlugin()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-wiki-data-updated-'))
+  const storyRoot = path.join(baseDir, 'data', 'miyako-intel', 'warfarin-story', 'cn')
+  fs.mkdirSync(path.join(storyRoot, 'anchors'), { recursive: true })
+  fs.writeFileSync(path.join(storyRoot, 'manifest.json'), JSON.stringify({ language: 'cn', storyBundleUpdatedAt: '2026-05-14T18:22:33.000Z' }))
+  fs.writeFileSync(path.join(storyRoot, 'anchors', 'bundle.json'), JSON.stringify(Array.from({ length: 7 }, (_, index) => ({
+    anchor_id: `story_${index + 1}_0`,
+    content: `第 ${index + 1} 条火锅剧情。`,
+    source: `任务剧情：火锅资料${index + 1}`,
+    source_ref: `任务剧情：火锅资料${index + 1}`,
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: `第 ${index + 1} 条火锅剧情。` }],
+  }))))
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    baseDir,
+    http: async (url) => {
+      if (String(url).includes('api.warfarin.wiki')) return { query: '火锅', results: [] }
+      throw new Error(`local story search should not call remote story backend: ${url}`)
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storySearchEnabled: true,
+      pageSize: 5,
+    },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const next = commandHandlers.get('w+')
+  const session = createSession()
+  const searchText = await search({ session, options: {} }, '火锅')
+  const pageText = await next({ session })
+
+  assert.match(searchText, /数据更新时间：2026年05月14日/)
+  assert.match(pageText, /数据更新时间：2026年05月14日/)
+})
+
 test('warfarin wiki empty search clears previous numbered anchors', async () => {
   const { apply } = loadPlugin()
   const requests = []
