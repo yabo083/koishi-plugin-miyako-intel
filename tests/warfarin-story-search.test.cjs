@@ -177,6 +177,80 @@ test('built-in story search updates from remote compressed story text bundle', a
   assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'bundle.json')), true)
 })
 
+test('built-in story search decodes raw ArrayBuffer bundle and manifest from Koishi http', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const { bundledStorySeedCount } = require(path.join(rootDir, 'lib', 'services', 'warfarin-story-seed.js'))
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-arraybuffer-'))
+  const anchors = Array.from({ length: bundledStorySeedCount + 50 }, (_, i) => ({
+    anchor_id: `c27m5_${i}`,
+    content: `管理员：火锅会让大家暖和起来 ${i}。`,
+    source: `任务剧情：共饮一江水 ${i}`,
+    source_ref: `任务剧情：共饮一江水 ${i}`,
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: `火锅 ${i}` }],
+  }))
+  const bundle = zlib.gzipSync(JSON.stringify(anchors))
+  const sha256 = crypto.createHash('sha256').update(bundle).digest('hex')
+  // createKoishiHttpFetch unwraps response.data. The cordis http defaultDecoder
+  // returns a raw ArrayBuffer for application/octet-stream (GitHub release assets).
+  // Reproduce that exactly for BOTH the manifest and the gzip bundle.
+  const toAB = (buf) => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  const manifestBuf = Buffer.from(JSON.stringify({
+    schemaVersion: 1, parserVersion: 3, language: 'cn', count: anchors.length,
+    updatedAt: '2026-06-06T20:10:01.544Z', sourceUpdatedAt: '2026-06-05',
+    sha256, url: 'https://example.test/warfarin-story-cn.json.gz', source: 'warfarin.wiki',
+  }), 'utf8')
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    rateLimitMs: 0,
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    fetch: async (url) => {
+      if (String(url).endsWith('.manifest.json')) return toAB(manifestBuf)
+      if (String(url).endsWith('.json.gz')) return toAB(bundle)
+      throw new Error(`source update should not be called: ${url}`)
+    },
+  })
+
+  const report = await service.update()
+  const search = await service.search({ keyword: '火锅' })
+  assert.equal(report.success, anchors.length)
+  assert.ok(search.total > 0)
+  // The whole point: the data-update date must survive raw ArrayBuffer manifest parsing.
+  assert.equal(await service.getDataUpdatedLabel(), '2026年06月05日')
+  const written = JSON.parse(fs.readFileSync(path.join(baseDir, 'story-cache', 'cn', 'manifest.json'), 'utf8'))
+  assert.equal(written.storyBundleSourceUpdatedAt, '2026-06-05')
+})
+
+test('built-in story search reports non-gzip bundle instead of zlib header error', async () => {
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-notgzip-'))
+  const html = Buffer.from('<!DOCTYPE html><html><body>502 Bad Gateway</body></html>', 'utf8')
+  const sha256 = crypto.createHash('sha256').update(html).digest('hex')
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story-cache',
+    language: 'cn',
+    rateLimitMs: 0,
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    fetch: async (url) => {
+      if (String(url).endsWith('.manifest.json')) {
+        return { language: 'cn', count: 1, updatedAt: '2026-05-31T00:00:00.000Z', sha256, url: 'https://example.test/warfarin-story-cn.json.gz' }
+      }
+      if (String(url).endsWith('.json.gz')) return html.buffer.slice(html.byteOffset, html.byteOffset + html.byteLength)
+      throw new Error(`source update should not be called: ${url}`)
+    },
+  })
+
+  const report = await service.update()
+  assert.equal(report.failed, 1)
+  assert.match(report.warning, /not gzip/)
+})
+
 test('built-in story search exposes remote bundle data update date', async () => {
   const { WarfarinStorySearchService } = loadStorySearch()
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-bundle-date-'))

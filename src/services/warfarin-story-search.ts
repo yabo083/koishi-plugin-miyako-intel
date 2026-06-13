@@ -152,7 +152,7 @@ export class WarfarinStorySearchService {
   }
 
   private async updateFromBundle(): Promise<WarfarinStoryUpdateReport | undefined> {
-    const manifest = await readJson<any>(await this.fetchWithTimeout(this.bundleManifestUrl))
+    const manifest = await readJson<any>(await this.fetchWithTimeout(this.bundleManifestUrl, { responseType: 'text' }))
     if (normalizeLanguage(manifest?.language || this.language) !== this.language) return undefined
     const bundleUrl = String(manifest?.url || deriveBundleUrl(this.bundleManifestUrl)).trim()
     if (!bundleUrl) return undefined
@@ -162,9 +162,13 @@ export class WarfarinStorySearchService {
       const updatedAt = new Date().toISOString()
       return { success: this.anchors.length, failed: 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt }
     }
-    const compressed = await readBuffer(await this.fetchWithTimeout(bundleUrl))
+    const compressed = await readBuffer(await this.fetchWithTimeout(bundleUrl, { responseType: 'arraybuffer' }))
     const sha256 = createHash('sha256').update(compressed).digest('hex')
     if (manifest?.sha256 && sha256 !== manifest.sha256) throw new Error('story bundle sha256 mismatch')
+    if (compressed.length < 2 || compressed[0] !== 0x1f || compressed[1] !== 0x8b) {
+      const preview = compressed.slice(0, 64).toString('utf8').replace(/\s+/g, ' ').trim()
+      throw new Error(`story bundle is not gzip (got ${compressed.length} bytes${preview ? `, starts with: ${preview}` : ''})`)
+    }
     const payload = JSON.parse(gunzipSync(compressed).toString('utf8'))
     const anchors = (Array.isArray(payload) ? payload : payload?.anchors || []).filter(isStoryAnchor)
     if (!anchors.length) throw new Error('story bundle has no usable anchors')
@@ -199,11 +203,11 @@ export class WarfarinStorySearchService {
     return String(manifest?.source || '').trim() === 'warfarin.wiki'
   }
 
-  private async fetchWithTimeout(url: string) {
+  private async fetchWithTimeout(url: string, init: Record<string, any> = {}) {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined
     const timer = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined
     try {
-      return await this.fetchImpl(url, { method: 'GET', signal: controller?.signal })
+      return await this.fetchImpl(url, { method: 'GET', ...init, signal: controller?.signal })
     } finally {
       if (timer) clearTimeout(timer)
     }
@@ -475,13 +479,18 @@ function excerptAroundKeyword(text: string, keyword: string, maxLength: number) 
 
 async function readJson<T>(response: any): Promise<T> {
   if (response && typeof response.json === 'function') return response.json()
+  if (typeof response === 'string') return JSON.parse(response) as T
+  if (Buffer.isBuffer(response)) return JSON.parse(response.toString('utf8')) as T
+  if (response instanceof ArrayBuffer) return JSON.parse(Buffer.from(response).toString('utf8')) as T
+  if (ArrayBuffer.isView(response)) return JSON.parse(Buffer.from(response.buffer, response.byteOffset, response.byteLength).toString('utf8')) as T
   return response as T
 }
 
 async function readBuffer(response: any): Promise<Buffer> {
   if (response && typeof response.arrayBuffer === 'function') return Buffer.from(await response.arrayBuffer())
   if (Buffer.isBuffer(response)) return response
-  if (response instanceof Uint8Array) return Buffer.from(response)
+  if (response instanceof ArrayBuffer) return Buffer.from(response)
+  if (ArrayBuffer.isView(response)) return Buffer.from(response.buffer, response.byteOffset, response.byteLength)
   return Buffer.from(String(response || ''))
 }
 

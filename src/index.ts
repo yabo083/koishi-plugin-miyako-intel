@@ -884,6 +884,7 @@ function createKoishiHttpFetch(http: any, timeoutMs: number) {
     const options: Record<string, any> = {
       method: init.method,
       headers: init.headers,
+      responseType: init.responseType,
       timeout: timeoutMs,
       signal: init.signal,
       validateStatus: () => true,

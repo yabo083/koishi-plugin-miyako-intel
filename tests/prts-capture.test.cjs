@@ -4,6 +4,7 @@ const { Argv, Context } = require('koishi')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const zlib = require('node:zlib')
 
 const rootDir = path.resolve(__dirname, '..')
 const builtFile = path.join(rootDir, 'lib', 'index.js')
@@ -1434,6 +1435,41 @@ test('story bundle update failures are logged by log level', async () => {
   await new Promise((resolve) => setTimeout(resolve, 800))
 
   assert.equal(loggerLines.some(([level, message]) => level === 'warn' && /GitHub 全文合集/.test(message) && /github unreachable/.test(message)), true)
+})
+
+test('story bundle download requests binary response from Koishi http', async () => {
+  const { apply } = loadPlugin()
+  const requests = []
+  const bundle = zlib.gzipSync(JSON.stringify([{
+    anchor_id: 'c27m5_0',
+    content: '管理员：火锅会让大家暖和起来。',
+    source: '任务剧情：共饮一江水',
+    source_ref: '任务剧情：共饮一江水',
+    scope: 'missions',
+    relevance: 1,
+    full_text: [{ speaker: '管理员', text: '火锅会让大家暖和起来。' }],
+  }]))
+  const { ctx } = createMockContext({
+    http: async (url, options) => {
+      requests.push({ url: String(url), options })
+      if (String(url).endsWith('.manifest.json')) return { data: { language: 'cn', count: 1, updatedAt: '2026-05-14T00:00:00.000Z', url: 'https://example.test/warfarin-story-cn.json.gz' }, status: 200 }
+      if (String(url).endsWith('.json.gz')) return { data: bundle, status: 200 }
+      throw new Error(`unexpected request: ${url}`)
+    },
+  })
+
+  apply(ctx, {
+    ...defaultConfig,
+    wiki: {
+      ...defaultConfig.wiki,
+      storyUpdateOnStart: true,
+      storyBundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  const bundleRequest = requests.find((item) => item.url.endsWith('.json.gz'))
+  assert.equal(bundleRequest?.options?.responseType, 'arraybuffer')
 })
 
 test('silent log level suppresses story bundle update warnings', async () => {
