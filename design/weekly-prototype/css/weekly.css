@@ -244,9 +244,7 @@ body {
 
 /* ---------------- 栏目标题：黑底反白标签 ---------------- */
 .wk-tab {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
+  display: inline-block;
   background: var(--ink);
   color: var(--paper);
   font-size: 31px;
@@ -254,16 +252,6 @@ body {
   letter-spacing: 0.16em;
   padding: 8px 20px 10px;
   margin-bottom: 16px;
-}
-.wk-tab i {
-  font-style: normal;
-  font-size: 26px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 900;
-  color: #fff;
-  background: var(--accent);
-  padding: 0 10px 2px;
-  letter-spacing: 0;
 }
 /* ---------------- 分区通用 ---------------- */
 .wk-band { padding: 16px 0; border-bottom: 4px solid var(--ink); }

@@ -91,7 +91,7 @@
     }).join('')
   }
 
-  const tab = (cn, count) => `<h2 class="wk-tab">${esc(cn)}${count ? `<i>${esc(count)}</i>` : ''}</h2>`
+  const tab = (cn) => `<h2 class="wk-tab">${esc(cn)}</h2>`
   /* ---------- 生辰干员 ---------- */
   // 同一行里所有名字用同一档字号：按最长的那个名字定档，避免一行里大小不一
   function nameClass(list) {
@@ -107,7 +107,7 @@
     if (list.length === 1) {
       const op = list[0]
       return `<section class="wk-band">
-        ${tab('今日生日', '01')}
+        ${tab('今日生日')}
         <div class="wk-portraits wk-portraits--solo">
           <figure class="wk-figure">
             <div class="wk-figure__frame"><img src="${esc(op.art || op.avatar)}" alt="${esc(op.name)}"></div>
@@ -121,7 +121,7 @@
       </section>`
     }
     return `<section class="wk-band">
-      ${tab('今日生日', pad2(list.length))}
+      ${tab('今日生日')}
       <div class="wk-portraits">${list.map((op) => `
         <figure class="wk-figure">
           <div class="wk-figure__frame"><img src="${esc(op.art || op.avatar)}" alt="${esc(op.name)}"></div>

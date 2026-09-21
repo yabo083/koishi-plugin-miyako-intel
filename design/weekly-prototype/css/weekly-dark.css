@@ -88,11 +88,6 @@
   border-radius: 10px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
 }
-.wk--dark .wk-tab i {
-  background: var(--accent);
-  color: #14131a;
-  border-radius: 5px;
-}
 /* ---------- 生辰立绘：圆角图卡 + 底部渐隐蒙版 ---------- */
 .wk--dark .wk-figure__frame {
   border-radius: 16px;

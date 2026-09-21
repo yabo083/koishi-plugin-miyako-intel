@@ -108,8 +108,7 @@ function clockHtml(text: string) {
   }).join('')
 }
 
-const tab = (title: string, count?: string) =>
-  `<h2 class="wk-tab">${escapeHtml(title)}${count ? `<i>${escapeHtml(count)}</i>` : ''}</h2>`
+const tab = (title: string) => `<h2 class="wk-tab">${escapeHtml(title)}</h2>`
 
 /** 带图砖的文字单元：图必须写进 <i> 的 background-image（CSS 变量里的相对路径会按样式表位置解析） */
 function shaded(kind: 'val' | 'op', icon: string, text: string) {
@@ -269,9 +268,7 @@ body {
 .wk-band:last-of-type { margin-bottom: 0; }
 /* ---------------- 栏目标签：亮块压深底 ---------------- */
 .wk-tab {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
+  display: inline-block;
   background: rgba(245, 242, 236, 0.94);
   color: #14131a;
   font-size: 31px;
@@ -281,17 +278,6 @@ body {
   margin-bottom: 16px;
   border-radius: 10px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-}
-.wk-tab i {
-  font-style: normal;
-  font-size: 26px;
-  font-weight: 900;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-  background: var(--accent);
-  color: #14131a;
-  padding: 0 10px 2px;
-  border-radius: 5px;
 }
 
 /* ---------------- 生辰干员 ---------------- */
@@ -317,7 +303,7 @@ body {
   left: 0; right: 0; bottom: 0;
   height: 6px;
   border-radius: 0 0 16px 16px;
-  background: var(--accent);
+  background: var(--birthday-accent);
 }
 /* 半身立绘是窄长图，等比放进方框会留大片空白；改为裁切填满，只保留头肩 */
 .wk-figure__frame img {
@@ -437,7 +423,7 @@ body {
   line-height: 1.3;
   letter-spacing: 0.02em;
 }
-.wk-news__title b { color: var(--accent); }
+.wk-news__title b { color: var(--birthday-accent); }
 /* ---------------- 今日可刷 ---------------- */
 .wk-collect__row {
   display: flex;
@@ -617,7 +603,7 @@ function coverBand(data: DailyCardData) {
     const op = list[0]
     const quote = String(op.quote || '').trim()
     return `<section class="wk-band">
-      ${tab('今日生日', '01')}
+      ${tab('今日生日')}
       <div class="wk-portraits wk-portraits--solo" id="wk-solo">
         <figure class="wk-figure">
           <div class="wk-figure__frame"><img src="${art(op)}" alt="${escapeHtml(op.name)}"></div>
@@ -633,7 +619,7 @@ function coverBand(data: DailyCardData) {
     </section>`
   }
   return `<section class="wk-band">
-    ${tab('今日生日', pad2(list.length))}
+    ${tab('今日生日')}
     <div class="wk-portraits">${list.map((op) => `
       <figure class="wk-figure">
         <div class="wk-figure__frame"><img src="${art(op)}" alt="${escapeHtml(op.name)}"></div>
@@ -772,7 +758,7 @@ export function renderWeeklyHtml(data: DailyCardData, options: { fontsCssLinks: 
   const matched = String(data.dateText || '').match(/(\d+)月(\d+)日/)
   const numericDate = matched ? `${pad2(matched[1])}.${pad2(matched[2])}` : escapeHtml(data.dateText)
   const weekIndex = Math.max(0, WEEK_CN.indexOf(String(data.weekText || '').replace('星期', '')))
-  // 生日色只覆盖书脊和星期徽章；其余强调色保持星期轮换。
+  // 生日色覆盖书脊、星期徽章、立绘底边和情报关键词；其余强调色保持星期轮换。
   let birthdayColor = ''
   for (const operator of data.birthdays || []) {
     birthdayColor = operatorThemeColor(operator.art)

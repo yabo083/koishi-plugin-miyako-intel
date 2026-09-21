@@ -168,9 +168,7 @@ body {
 }
 .wk-band:last-of-type { margin-bottom: 0; }
 .wk-tab {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
+  display: inline-block;
   background: rgba(245, 242, 236, 0.94);
   color: #14131a;
   font-size: 31px;
@@ -180,17 +178,6 @@ body {
   margin-bottom: 16px;
   border-radius: 10px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-}
-.wk-tab i {
-  font-style: normal;
-  font-size: 26px;
-  font-weight: 900;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-  background: var(--accent);
-  color: #14131a;
-  padding: 0 10px 2px;
-  border-radius: 5px;
 }
 
 /* ---------------- 生辰干员（多人基线，作对照） ---------------- */
@@ -333,7 +320,7 @@ body {
     <div class="wk-body">
       <!-- ============ 被测板块：单人生日 + 报到台词 ============ -->
       <section class="wk-band">
-        <h2 class="wk-tab">今日生日<i>01</i></h2>
+        <h2 class="wk-tab">今日生日</h2>
         <div class="wk-portraits wk-portraits--solo" id="solo">
           <figure class="wk-figure">
             <div class="wk-figure__frame"><img id="solo-art" alt=""></div>
