@@ -14,3 +14,8 @@ coverage/
 *.local
 
 .dbg.json
+
+# 本地 QA 产物：临时渲染/截图/探针脚本，随时可重跑生成，不进版本库
+.qa-*
+letter-e2e-*.png
+design/weekly-prototype/qa-*.png
