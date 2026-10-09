@@ -144,6 +144,39 @@ test('mapRawToDailyCard keeps every stage group of a 矢量突破 style board', 
   assert.match(card.stageLine, /特别战线（VEC-SP01 ~ VEC-SP16）/)
 })
 
+// 2026-10-09 昨日海：整组没有号段（条目本身就是「悖论模拟 信诺」这种名字），旧逻辑 /^[A-Za-z]/ 把整组滤空
+test('mapRawToDailyCard keeps name-only stage groups like 悖论模拟', () => {
+  const card = mapRawToDailyCard({
+    ...RAW_FIXTURE,
+    stageBlocks: [
+      {
+        title: '新增关卡',
+        lead: '昨日海',
+        groups: [
+          {
+            title: '雷亚-伊比利亚',
+            codes: ['YW-ST-1 羽兽盘旋', 'YW-1 互助会', 'YW-TR-1 炼金术遗产考察', 'YW-2 浮浮沉沉',
+              'YW-3 破手铐', 'YW-4 走上街道', 'YW-ST-2 海声嘈杂', 'YW-5 三岔路口',
+              'YW-6 大人物', 'YW-7 殉葬品', 'YW-8 鳞的记忆', 'YW-ST-3 留给明天'],
+          },
+          {
+            title: '悖论模拟',
+            codes: ['悖论模拟 信诺', '悖论模拟 无所遁形', '悖论模拟 “继续下潜！”', '悖论模拟 齐奏落下'],
+          },
+        ],
+      },
+    ],
+  }, { now: NOW })
+
+  assert.deepEqual(card.stageGroups, [
+    { title: '雷亚-伊比利亚', codes: 'YW-ST-1 ~ YW-ST-3 / YW-1 ~ YW-8 / YW-TR-1' },
+    { title: '悖论模拟', codes: '信诺、无所遁形、“继续下潜！”、齐奏落下' },
+  ])
+  // 有号段的组照旧只留号段（名字仍不占版面）
+  assert.doesNotMatch(card.stageGroups[0].codes, /羽兽盘旋/)
+  assert.match(card.stageLine, /悖论模拟（信诺、无所遁形、“继续下潜！”、齐奏落下）/)
+})
+
 // 「特别开放」窗口：首页「每日开放」只剩一行「资源收集所有关卡全天开放中，N后结束」
 const ALL_OPEN_FIXTURE = {
   ...RAW_FIXTURE,

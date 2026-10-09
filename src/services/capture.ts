@@ -253,13 +253,26 @@ export function mapRawToDailyCard(raw: RawDailyData, options: { now: Date }): Da
     : ''
 
   const stageBlock = raw.stageBlocks.find((block) => block.title === '新增关卡')
-  // 每个关卡集单独压缩号段：PRTS 首页把「踏上归家长途 / 眺望待行之路 / 奇象巡展 …」分组列出，卡面照搬这个分组
-  const stageGroups = (stageBlock?.groups || []).map((group) => ({
-    title: group.title,
-    codes: compressStageCodes(group.codes
-      .map((code) => code.split(/\s+/)[0])
-      .filter((code) => /^[A-Za-z]/.test(code))),
-  })).filter((group) => group.title || group.codes)
+  // 每个关卡集单独压缩号段：PRTS 首页把「踏上归家长途 / 眺望待行之路 / 奇象巡展 …」分组列出，卡面照搬这个分组。
+  // 有的组整组没有号段（如「悖论模拟 信诺 / 悖论模拟 无所遁形 …」），这类条目按名字保留，只去掉与分组标题
+  // 重复的前缀——早先它们被 /^[A-Za-z]/ 一把滤掉，卡面只剩小标题。
+  const stageGroups = (stageBlock?.groups || []).map((group) => {
+    const codes: string[] = []
+    const names: string[] = []
+    for (const entry of group.codes) {
+      const [head, ...rest] = entry.split(/\s+/)
+      if (/^[A-Za-z][A-Za-z0-9-]*$/.test(head)) {
+        codes.push(head)
+        continue
+      }
+      const label = group.title && entry.startsWith(`${group.title} `) ? rest.join(' ') : entry
+      if (label) names.push(label)
+    }
+    return {
+      title: group.title,
+      codes: [compressStageCodes(codes), names.join('、')].filter(Boolean).join(' / '),
+    }
+  }).filter((group) => group.title || group.codes)
   const stageTitle = stageBlock?.lead || ''
   // 单行版本给「今日信笺 / 泰拉晨报」用
   const stageLine = stageGroups.length
