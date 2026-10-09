@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-miyako-intel",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Koishi plugin: Miyako daily letter card from PRTS (auto capture & push) plus Warfarin wiki search.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
