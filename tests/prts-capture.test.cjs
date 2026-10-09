@@ -1276,15 +1276,24 @@ const FAKE_RAW_DAILY = {
   ],
 }
 
-function createFakePuppeteer({ calls }) {
+// 「特别开放」窗口：首页不列分区，只剩一行「资源收集所有关卡全天开放中，N后结束」
+const FAKE_RAW_ALL_OPEN = {
+  ...FAKE_RAW_DAILY,
+  todayParagraphs: ['资源收集所有关卡全天开放中，10天19小时后结束。'],
+  coreItems: [
+    { text: '资源收集所有关卡全天开放中，10天19小时后结束。', epoch: Math.floor(Date.now() / 1000) + (10 * 24 + 19) * 3600 },
+  ],
+}
+
+function createFakePuppeteer({ calls, raw }) {
   return {
     async page() {
-      return createFakePage(calls)
+      return createFakePage(calls, raw)
     },
   }
 }
 
-function createFakePage(calls) {
+function createFakePage(calls, raw) {
   const page = {
     isRender: false,
     async setUserAgent() {},
@@ -1300,7 +1309,7 @@ function createFakePage(calls) {
     async waitForFunction() {},
     async waitForTimeout() {},
     async evaluate() {
-      return page.isRender ? undefined : FAKE_RAW_DAILY
+      return page.isRender ? undefined : (raw || FAKE_RAW_DAILY)
     },
     async $(selector) {
       if (selector === '#letter') {
@@ -1355,6 +1364,63 @@ test('prts d sends the rendered letter card image', async () => {
   assert.equal(reply, undefined)
   assert.equal(session.sent.length, 1)
   assert.equal(String(session.sent[0]).includes('base64'), true)
+})
+
+test('prts d still renders the card during the 特别开放 window', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls, raw: FAKE_RAW_ALL_OPEN })
+  const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true })
+
+  const session = createSession()
+  const reply = await commandHandlers.get('prts.d')({ session, options: {} })
+
+  // 分区为空但「特别开放」这一行仍在，卡片照出而不是回退缓存
+  assert.equal(reply, undefined)
+  assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
+  assert.equal(session.sent.length, 1)
+  assert.equal(String(session.sent[0]).includes('base64'), true)
+})
+
+const FAKE_RAW_EMPTY = { groups: [], todayParagraphs: [], coreItems: [], stageBlocks: [] }
+
+test('failed capture ships the apology card and leaves today uncached', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls, raw: FAKE_RAW_EMPTY })
+  const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true, fallbackReason: 'courier' })
+
+  const session = createSession()
+  const reply = await commandHandlers.get('prts.d')({ session, options: {} })
+
+  assert.equal(reply, undefined)
+  assert.equal(session.sent.length, 1)
+  assert.equal(String(session.sent[0]).includes('base64'), true)
+  // 配置的回退理由写在牌子上
+  const renderDir = path.join(ctx.baseDir, 'data', 'miyako-intel', 'cache', 'render')
+  assert.match(fs.readFileSync(path.join(renderDir, 'fallback.html'), 'utf8'), /很抱歉博士！今日的「今日信笺」被见习信使弄丢了。/)
+  // 回退卡片不写进缓存：今天仍然没有可用日报图，明天照常重试
+  const cacheRoot = path.join(ctx.baseDir, 'data', 'miyako-intel', 'cache')
+  const cached = fs.existsSync(cacheRoot)
+    ? fs.readdirSync(cacheRoot).filter((entry) => fs.existsSync(path.join(cacheRoot, entry, 'daily.png')))
+    : []
+  assert.deepEqual(cached, [])
+})
+
+test('browser-less fallback ships the bare artwork with the configured reason', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer: createFailingPuppeteer() })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true, fallbackReason: 'packet' })
+
+  const session = createSession()
+  const reply = await commandHandlers.get('prts.d')({ session, options: {} })
+
+  assert.equal(reply, undefined)
+  assert.equal(session.sent.length, 1)
+  const artwork = fs.readFileSync(path.join(rootDir, 'assets', 'fallback', 'lost-card.png')).toString('base64')
+  assert.equal(String(session.sent[0]).includes(artwork), true)
 })
 
 test('prts r ignores cache and forces recapture', async () => {

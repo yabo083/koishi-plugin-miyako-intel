@@ -10,15 +10,17 @@ import { renderWeeklyHtml } from './card-weekly'
 export interface CardStyle {
   id: string
   label: string
+  /** 卡片自己的名字（不带风格注脚），回退文案里会引用它，如「今日的『泰拉周刊』」 */
+  shortLabel: string
   render: (data: DailyCardData, options: { fontsCssLinks: string }) => string
   /** 版式需要「近期新增 / 凭证甄选」干员的头像时置为 true，抓取阶段才会去拉头像 */
   needsOperatorAvatars?: boolean
 }
 
 export const CARD_STYLES: Record<string, CardStyle> = {
-  letter: { id: 'letter', label: '今日信笺（手账风）', render: renderCardHtml },
-  weekly: { id: 'weekly', label: '泰拉周刊（夜间书脊）', render: renderWeeklyHtml, needsOperatorAvatars: true },
-  newspaper: { id: 'newspaper', label: '泰拉晨报（报纸风）', render: renderNewspaperHtml },
+  letter: { id: 'letter', label: '今日信笺（手账风）', shortLabel: '今日信笺', render: renderCardHtml },
+  weekly: { id: 'weekly', label: '泰拉周刊（夜间书脊）', shortLabel: '泰拉周刊', render: renderWeeklyHtml, needsOperatorAvatars: true },
+  newspaper: { id: 'newspaper', label: '泰拉晨报（报纸风）', shortLabel: '泰拉晨报', render: renderNewspaperHtml },
 }
 
 export function resolveCardStyle(styleId: string | undefined): CardStyle {
@@ -225,6 +227,10 @@ export function renderCardHtml(data: DailyCardData, options: { fontsCssLinks: st
     { label: '物资筹备分区', values: data.collectMaterial },
     { label: '芯片搜索分区', values: data.collectChips },
   ].filter((item) => item.values.length)
+  // 「特别开放」窗口首页不列分区，只给一行「全部资源关卡全天开放中」——卡面照搬这一状态
+  if (!collectItems.length && data.collectAllOpen) {
+    collectItems.push({ label: '特别开放', values: [data.collectAllOpen] })
+  }
 
   const coreHtml = data.core.map((item) => `
       <li class="core-item core-item--${item.urgency}">

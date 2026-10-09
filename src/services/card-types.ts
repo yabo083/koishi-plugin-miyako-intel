@@ -48,6 +48,12 @@ export interface DailyCardData {
   collectIntro: string
   collectMaterial: string[]
   collectChips: string[]
+  /**
+   * 「特别开放」窗口内 PRTS 首页的「每日开放」只输出一行「资源收集所有关卡全天开放中，N后结束」，
+   * 不再列物资筹备 / 芯片搜索分区；非空时它就是今日可刷的全部内容（整句，如
+   * 「全部资源关卡全天开放中（10天19小时后结束）」）。
+   */
+  collectAllOpen: string
   core: DailyCoreItem[]
   birthdays: DailyBirthdayOperator[]
   recentOperators: DailyOperator[]

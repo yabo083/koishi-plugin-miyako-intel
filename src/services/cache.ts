@@ -148,25 +148,6 @@ export class DailyImageCache {
     }
   }
 
-  async readLatest(kind: CaptureKind) {
-    const dayKeys = await this.listDayKeys()
-
-    for (const dayKey of dayKeys) {
-      const filePath = this.getImagePath(kind, dayKey)
-      if (await this.exists(filePath)) {
-        const manifest = await this.readManifest(kind, dayKey)
-        return {
-          buffer: await fs.readFile(filePath),
-          dayKey,
-          filePath,
-          mimeType: manifest?.mimeType,
-        }
-      }
-    }
-
-    return null
-  }
-
   private get rootDir() {
     return path.resolve(this.baseDir, this.cacheDirectory)
   }

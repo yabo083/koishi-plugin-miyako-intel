@@ -63,6 +63,7 @@ export function apply(ctx: Context, config: RuntimeConfig) {
     refreshCron: resolved.refreshCron,
     nowProvider,
     styleId: resolved.cardStyle,
+    fallbackReason: resolved.fallbackReason,
   })
 
   const wikiClient = new WarfarinWikiClient({

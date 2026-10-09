@@ -95,6 +95,90 @@ test('mapRawToDailyCard builds the letter card data from raw homepage extract', 
   assert.match(card.stageLine, /奇象巡展（EE-01 ~ EE-02）/)
 })
 
+// 「特别开放」窗口：首页「每日开放」只剩一行「资源收集所有关卡全天开放中，N后结束」
+const ALL_OPEN_FIXTURE = {
+  ...RAW_FIXTURE,
+  todayParagraphs: [
+    '现在时间：10月9日(星期五) 08:00。',
+    '资源收集所有关卡全天开放中，10天19小时后结束。',
+  ],
+  coreItems: [
+    { text: '资源收集所有关卡全天开放中，10天19小时后结束。', epoch: Math.floor(NOW.getTime() / 1000) + (10 * 24 + 19) * 3600 },
+  ],
+}
+
+test('mapRawToDailyCard reads the 特别开放 line as the collect state', () => {
+  const card = mapRawToDailyCard(ALL_OPEN_FIXTURE, { now: NOW })
+
+  // 特别开放窗口里首页不列分区：两个分区都空，倒计时按同一段的 data-time 现算
+  assert.deepEqual(card.collectMaterial, [])
+  assert.deepEqual(card.collectChips, [])
+  assert.equal(card.collectAllOpen, '全部资源关卡全天开放中（10天19小时后结束）')
+  assert.deepEqual(card.core, [])
+  assert.match(card.collectIntro, /特别开放/)
+
+  const letter = renderCardHtml(card, { fontsCssLinks: '' })
+  assert.match(letter, /特别开放：\s*<b>全部资源关卡全天开放中（10天19小时后结束）<\/b>/)
+
+  const { renderWeeklyHtml } = require('../lib/services/card-weekly.js')
+  const weekly = renderWeeklyHtml(card, { fontsCssLinks: '' })
+  assert.match(weekly, /wk-collect__key">特别开放</)
+  assert.match(weekly, /<em>全部资源关卡全天开放中（10天19小时后结束）<\/em>/)
+
+  const { renderNewspaperHtml } = require('../lib/services/card-newspaper.js')
+  const newspaper = renderNewspaperHtml(card, { fontsCssLinks: '' })
+  assert.match(newspaper, /np-collect-title">特别开放</)
+  assert.match(newspaper, /<li><b>全部资源关卡全天开放中（10天19小时后结束）<\/b><\/li>/)
+})
+
+test('特别开放 falls back to the printed countdown and to a state-only line', () => {
+  // 页面脚本没把倒计时写进正文时，退回正文里的「N后结束」
+  const printed = mapRawToDailyCard({
+    ...ALL_OPEN_FIXTURE,
+    todayParagraphs: [...ALL_OPEN_FIXTURE.todayParagraphs.slice(0, 1), '资源收集所有关卡全天开放中，10天19小时后结束。'],
+    coreItems: [],
+  }, { now: NOW })
+  assert.equal(printed.collectAllOpen, '全部资源关卡全天开放中（10天19小时后结束）')
+
+  // 正文里连倒计时都没有时只报状态，不编造剩余时间
+  const bare = mapRawToDailyCard({
+    ...ALL_OPEN_FIXTURE,
+    todayParagraphs: [...ALL_OPEN_FIXTURE.todayParagraphs.slice(0, 1), '资源收集所有关卡全天开放中，后结束。'],
+    coreItems: [],
+  }, { now: NOW })
+  assert.equal(bare.collectAllOpen, '全部资源关卡全天开放中')
+  assert.match(renderCardHtml(bare, { fontsCssLinks: '' }), /特别开放：\s*<b>全部资源关卡全天开放中<\/b>/)
+})
+
+test('renderFallbackHtml writes the apology into the sign area', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const { renderFallbackHtml, readPngSize, FALLBACK_REASONS } = require('../lib/services/card-fallback.js')
+
+  const sentences = Object.values(FALLBACK_REASONS).map((reason) => reason.sentence('泰拉周刊'))
+  assert.deepEqual(sentences, [
+    '很抱歉博士！今日的「泰拉周刊」遇到了天灾。',
+    '很抱歉博士！今日的「泰拉周刊」被见习信使弄丢了。',
+    '很抱歉博士！今日的「泰拉周刊」城际网络丢包了。',
+  ])
+
+  const png = fs.readFileSync(path.join(__dirname, '..', 'assets', 'fallback', 'lost-card.png'))
+  const { width, height } = readPngSize(png)
+  assert.deepEqual({ width, height }, { width: 1024, height: 1535 })
+
+  const html = renderFallbackHtml({
+    imageDataUrl: 'data:image/png;base64,AAAA',
+    message: sentences[1],
+    fontsCssLinks: '<link rel="stylesheet" href="x.css">',
+    width,
+    height,
+  })
+  assert.match(html, /<img src="data:image\/png;base64,AAAA" alt="">/)
+  // 牌子在插画里的位置（比例）与按牌子高度算出的字号
+  assert.match(html, /left: 26\.370%; top: 20\.720%; width: 48\.050%; height: 16\.680%/)
+  assert.match(html, /<p class="sign-text" style="font-size: 47px">很抱歉博士！今日的「泰拉周刊」被见习信使弄丢了。<\/p>/)
+})
+
 test('compressStageCodes keeps leading zeros and merges contiguous codes', () => {
   assert.equal(compressStageCodes(['TO-EX-1', 'TO-EX-2', 'TO-EX-8']), 'TO-EX-1、TO-EX-2、TO-EX-8')
   assert.equal(compressStageCodes(['EE-01 奇象收录时间！'.split(' ')[0], 'EE-02', 'EE-03']), 'EE-01 ~ EE-03')

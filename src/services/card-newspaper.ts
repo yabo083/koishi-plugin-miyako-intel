@@ -190,6 +190,10 @@ export function renderNewspaperHtml(data: DailyCardData, options: { fontsCssLink
     { title: '物资筹备分区', values: data.collectMaterial },
     { title: '芯片搜索分区', values: data.collectChips },
   ].filter((item) => item.values.length)
+  // 「特别开放」窗口首页不列分区，只给一行「全部资源关卡全天开放中」——卡面照搬这一状态
+  if (!collectItems.length && data.collectAllOpen) {
+    collectItems.push({ title: '特别开放', values: [data.collectAllOpen] })
+  }
 
   const collectHtml = collectItems.map((item) => `
       <div class="np-collect-group">

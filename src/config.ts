@@ -2,6 +2,7 @@ import { Schema } from 'koishi'
 import { Config as RuntimeConfig } from './types'
 import { defaultUserAgent } from './core/constants'
 import { CARD_STYLES } from './services/card-template'
+import { DEFAULT_FALLBACK_REASON, FALLBACK_REASONS } from './services/card-fallback'
 
 /** 本地剧情包只检索任务文本这一个 scope */
 export const STORY_SCOPES = ['missions']
@@ -18,6 +19,7 @@ export const Config = Schema.intersect([
   Schema.object({
     dailyCardEnabled: Schema.boolean().default(true).description('每日情报信笺：关闭后不抓取、不推送。'),
     cardStyle: Schema.union(Object.entries(CARD_STYLES).map(([id, style]) => Schema.const(id).description(style.label))).default('letter').description('日报卡片风格。'),
+    fallbackReason: Schema.union(Object.entries(FALLBACK_REASONS).map(([id, reason]) => Schema.const(id).description(reason.label))).role('radio').default(DEFAULT_FALLBACK_REASON).description('日报生成失败时，回退卡片上写哪一句致歉（回退卡片见 assets/fallback）。'),
     logLevel: Schema.union([
       Schema.const('silent').description('静默：不输出插件运行日志。'),
       Schema.const('warn').description('警告：只输出失败和异常。'),
@@ -61,6 +63,7 @@ export function resolveConfig(config: Partial<RuntimeConfig> = {}): RuntimeConfi
   return {
     dailyCardEnabled: config.dailyCardEnabled ?? true,
     cardStyle: config.cardStyle || 'letter',
+    fallbackReason: config.fallbackReason || DEFAULT_FALLBACK_REASON,
     refreshCron: config.refreshCron || '5 4 * * *',
     logLevel: config.logLevel || 'info',
     scheduledPush: {

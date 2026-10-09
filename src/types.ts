@@ -3,6 +3,8 @@ export interface Config {
   dailyCardEnabled: boolean
   /** 日报卡片风格 id（见 card-template 的 CARD_STYLES） */
   cardStyle: string
+  /** 日报生成失败时回退卡片上写的理由 id（见 card-fallback 的 FALLBACK_REASONS） */
+  fallbackReason: string
   refreshCron: string
   logLevel: LogLevel
   scheduledPush: ScheduledPushConfig

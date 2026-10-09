@@ -32,7 +32,7 @@ export function registerDailyCommands(deps: DailyCommandsDeps) {
       await session.send(toDailyImageMessage(result))
     } catch (error) {
       logger.warn(`发送今日信笺失败：${formatError(error)}`)
-      return '今日信笺生成失败，且没有可用缓存。请确认 puppeteer 插件已启用并稍后重试。'
+      return '今日信笺生成失败，回退卡片也没能发出。请确认 puppeteer 插件已启用并稍后重试。'
     }
   }
 

@@ -9,6 +9,7 @@ import { formatError } from '../core/errors'
 import { getZonedParts } from '../core/time'
 import { CachedImageResult, CaptureKind } from '../types'
 import { buildSealSlots, renderCardByStyle, resolveCardStyle } from './card-template'
+import { DEFAULT_FALLBACK_REASON, FALLBACK_REASONS, readFallbackImage, readPngSize, renderFallbackHtml } from './card-fallback'
 import { DailyCardData, DailyCoreItem, DailyOperator, SealSlot } from './card-types'
 import { DailyImageCache } from './cache'
 
@@ -207,6 +208,22 @@ export function mapRawToDailyCard(raw: RawDailyData, options: { now: Date }): Da
   const materialMatch = collectParagraph.match(/物资筹备分区：([\s\S]*?)芯片搜索分区/)
   const chipMatch = collectParagraph.match(/芯片搜索分区：([\s\S]*)$/)
 
+  // 「特别开放」窗口内（模板:当前信息/每日开放 的 ifexpr 分支）首页不列分区，只给一行
+  // 「资源收集所有关卡全天开放中，N后结束」。倒计时优先按同一段的 data-time 现算，
+  // 页面脚本没把倒计时写进正文时只报状态；没有这一行时按分区轮换渲染。
+  const allOpenParagraph = raw.todayParagraphs.find((text) => /资源收集[\s\S]*?全天开放中/.test(text)) || ''
+  const allOpenEpoch = allOpenParagraph
+    ? raw.coreItems.find((item) => item.text === allOpenParagraph)?.epoch || 0
+    : 0
+  const allOpenRemaining = allOpenParagraph
+    ? (allOpenEpoch
+      ? formatRemainingText(allOpenEpoch * 1000 - options.now.getTime())
+      : allOpenParagraph.match(/([^，。\s]+?)后结束/)?.[1] || '')
+    : ''
+  const collectAllOpen = allOpenParagraph
+    ? `全部资源关卡全天开放中${allOpenRemaining ? `（${allOpenRemaining}后结束）` : ''}`
+    : ''
+
   const stageBlock = raw.stageBlocks.find((block) => block.title === '新增关卡')
   // 每个关卡集单独压缩号段：PRTS 首页把「踏上归家长途 / 眺望待行之路 / 奇象巡展 …」分组列出，卡面照搬这个分组
   const stageGroups = (stageBlock?.groups || []).map((group) => ({
@@ -233,11 +250,12 @@ export function mapRawToDailyCard(raw: RawDailyData, options: { now: Date }): Da
   return {
     dateText: `${parts.month}月${parts.day}日`,
     weekText: `星期${WEEKDAY_LABELS[parts.weekday]}`,
-    collectIntro: '今日资源收集，别忘了刷一遍——',
+    collectIntro: collectAllOpen ? '今日全部资源关卡特别开放，想刷哪关刷哪关——' : '今日资源收集，别忘了刷一遍——',
     sealSlots: buildSealSlots(options.now) as SealSlot[],
     capturedAtText: [String(parts.hour).padStart(2, '0'), String(parts.minute).padStart(2, '0')].join(':'),
     collectMaterial: splitCollectValues(materialMatch?.[1] || ''),
     collectChips: splitCollectValues(chipMatch?.[1] || ''),
+    collectAllOpen,
     core: raw.coreItems
       .map((item) => parseCoreItem(item.text, item.epoch, options.now))
       .filter((item): item is DailyCoreItem => !!item),
@@ -277,7 +295,7 @@ export class PrtsCaptureService {
     private readonly ctx: { puppeteer?: { page: () => Promise<any> } },
     private readonly cache: DailyImageCache,
     private readonly logger: { warn: (message: string) => void; info: (message: string) => void; debug?: (message: string) => void },
-    private readonly options: { refreshCron?: string; fetcher?: DailyFetcher; nowProvider?: () => Date; styleId?: string } = {},
+    private readonly options: { refreshCron?: string; fetcher?: DailyFetcher; nowProvider?: () => Date; styleId?: string; fallbackReason?: string } = {},
   ) {}
 
   async getDailyInfo(force = false): Promise<CachedImageResult> {
@@ -314,9 +332,47 @@ export class PrtsCaptureService {
       return await this.cache.write(kind, fresh.buffer, { mimeType: fresh.mimeType })
     } catch (error) {
       this.logger.warn(`日报卡片生成失败：${formatError(error)}`)
-      const fallback = await this.cache.readLatest(kind)
-      if (fallback) return fallback
-      throw error
+      // 失败就发回退卡片（不写缓存，明天照常重试）；宁可明说没送到，也不把旧卡当今天的推出去
+      return await this.renderFallbackCard()
+    }
+  }
+
+  /**
+   * 回退卡片：插画 + 一句可配置的致歉。浏览器连回退卡片都渲不出来时退到插画本体，牌子留空。
+   */
+  private async renderFallbackCard(): Promise<CachedImageResult> {
+    const fallbackImage = await readFallbackImage()
+    try {
+      const reason = FALLBACK_REASONS[this.options.fallbackReason || ''] ?? FALLBACK_REASONS[DEFAULT_FALLBACK_REASON]
+      const message = reason.sentence(resolveCardStyle(this.options.styleId).shortLabel)
+      const { width, height } = readPngSize(fallbackImage)
+      const html = renderFallbackHtml({
+        imageDataUrl: `data:image/png;base64,${fallbackImage.toString('base64')}`,
+        message,
+        fontsCssLinks: await this.ensureRenderAssets(),
+        width,
+        height,
+      })
+      const renderDir = path.join(this.cache.rootDirectory, 'render')
+      await fs.mkdir(renderDir, { recursive: true })
+      const htmlPath = path.join(renderDir, 'fallback.html')
+      await fs.writeFile(htmlPath, html, 'utf8')
+
+      const buffer = await this.withPage(async (page) => {
+        const fileUrl = 'file://' + (process.platform === 'win32' ? '/' : '') + htmlPath.replace(/\\/g, '/')
+        await page.setViewport({ width, height, deviceScaleFactor: 1 })
+        await page.goto(fileUrl, { waitUntil: 'load', timeout: NAVIGATION_TIMEOUT_MS })
+        await page.evaluate(() => (document.fonts ? document.fonts.ready.then(() => undefined) : undefined)).catch(() => undefined)
+        await this.waitForRenderDelay(page)
+        await this.waitForImages(page)
+        const target = await page.$('#letter')
+        if (!target) throw new Error('回退卡片截图节点创建失败')
+        return ensureBuffer(await target.screenshot({ type: 'png' }))
+      })
+      return { buffer, dayKey: this.cache.currentDayKey, filePath: htmlPath, mimeType: 'image/png' }
+    } catch (error) {
+      this.logger.warn(`回退卡片渲染失败，直接发插画本体：${formatError(error)}`)
+      return { buffer: fallbackImage, dayKey: this.cache.currentDayKey, filePath: '', mimeType: 'image/png' }
     }
   }
 
@@ -331,7 +387,7 @@ export class PrtsCaptureService {
     })
 
     const data = mapRawToDailyCard(raw, { now: this.now })
-    if (!data.collectMaterial.length && !data.collectChips.length && !data.core.length) {
+    if (!data.collectMaterial.length && !data.collectChips.length && !data.collectAllOpen && !data.core.length) {
       throw new Error('PRTS 首页未解析出有效日报数据')
     }
     for (const birthday of data.birthdays) {

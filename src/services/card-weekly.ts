@@ -652,6 +652,16 @@ function collectBand(data: DailyCardData) {
     { key: '物资筹备', table: ITEM_ICONS, values: data.collectMaterial || [] },
     { key: '芯片搜索', table: CHIP_ICONS, values: data.collectChips || [] },
   ].filter((row) => row.values.length)
+  // 「特别开放」窗口首页不列分区，只给一行「全部资源关卡全天开放中」——卡面照搬这一状态
+  if (!rows.length && data.collectAllOpen) {
+    return `<section class="wk-band">
+    ${tab('今日可刷')}
+    <div class="wk-collect__row">
+      <span class="wk-collect__key">特别开放</span>
+      <span class="wk-collect__vals">${shaded('val', '', data.collectAllOpen)}</span>
+    </div>
+  </section>`
+  }
   if (!rows.length) return ''
   return `<section class="wk-band">
     ${tab('今日可刷')}
