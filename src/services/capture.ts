@@ -325,6 +325,15 @@ function defaultFetcher(url: string, init?: DailyRequestInit): Promise<any> {
   })()
 }
 
+/**
+ * PRTS 首页走的是共享缓存（Tengine，`cache-control: s-maxage=18000`），明文 URL 实测能返回
+ * **5 小时前**的内容（`x-cache: HIT` + `age: 14887`，且带 `If-Modified-Since` 的二次请求仍被判新鲜），
+ * 卡面于是整天停在早上那一版。加一个一次性参数强制 MISS，拿当前的渲染结果。
+ */
+function withCacheBuster(url: string, stamp = Date.now()) {
+  return `${url}${url.includes('?') ? '&' : '?'}cb=${stamp}`
+}
+
 export class PrtsCaptureService {
   private readonly homepageUrl = HOMEPAGE_URL
 
@@ -420,7 +429,7 @@ export class PrtsCaptureService {
   /** 抓取 PRTS 首页 → 结构化数据 → 拉立绘 → 渲染「今日信笺」 → 截图 */
   private async captureDailyCard(): Promise<{ buffer: Buffer; mimeType: string }> {
     const raw: RawDailyData = await this.withPage(async (page) => {
-      await page.goto(this.homepageUrl, { waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS })
+      await page.goto(withCacheBuster(this.homepageUrl), { waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS })
       await page.waitForSelector('.mp-today', { timeout: NAVIGATION_TIMEOUT_MS })
       await this.waitForImages(page)
       await this.waitForRenderDelay(page)

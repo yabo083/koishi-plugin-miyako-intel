@@ -1301,6 +1301,7 @@ function createFakePage(calls, raw) {
       calls.push({ kind: 'viewport', ...viewport })
     },
     async goto(url) {
+      calls.push({ kind: 'goto', url: String(url) })
       page.isRender = String(url).startsWith('file://')
     },
     async waitForSelector(selector) {
@@ -1453,4 +1454,24 @@ test('prts cache reports cache root and day status', async () => {
   assert.match(report, /今日信笺缓存诊断/)
   assert.match(report, /当前缓存日：\d{4}-\d{2}-\d{2}/)
   assert.match(report, /今日缓存：不存在/)
+})
+
+test('homepage navigation bypasses the PRTS shared cache', async () => {
+  const { apply } = loadPlugin()
+  const calls = []
+  const puppeteer = createFakePuppeteer({ calls })
+  const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true })
+
+  await commandHandlers.get('prts.d')({ session: createSession(), options: {} })
+
+  const home = calls.filter((item) => item?.kind === 'goto' && !String(item.url).startsWith('file://'))
+  assert.equal(home.length, 1)
+  // 明文 URL 会命中 Tengine 里最多 5 小时的旧副本（s-maxage=18000），必须带一次性参数强制 MISS
+  assert.match(home[0].url, /^https:\/\/prts\.wiki\/w\//)
+  assert.match(home[0].url, /[?&]cb=\d+/)
+  // 本地渲染文件不做处理
+  const renders = calls.filter((item) => item?.kind === 'goto' && String(item.url).startsWith('file://'))
+  assert.equal(renders.length > 0, true)
+  assert.equal(renders.every((item) => !item.url.includes('cb=')), true)
 })
