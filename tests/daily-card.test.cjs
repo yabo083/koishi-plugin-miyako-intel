@@ -95,6 +95,55 @@ test('mapRawToDailyCard builds the letter card data from raw homepage extract', 
   assert.match(card.stageLine, /奇象巡展（EE-01 ~ EE-02）/)
 })
 
+// 2026-10-09 矢量突破#3：号段带字母后缀（VEC-SP01）与整段字母（VEC-A），旧压缩只认「前缀-纯数字」把它们丢了
+test('compressStageCodes keeps letter-suffixed and pure-letter stage codes', () => {
+  assert.equal(
+    compressStageCodes(['VEC-01', 'VEC-02', 'VEC-12']),
+    'VEC-01、VEC-02、VEC-12')
+  assert.equal(
+    compressStageCodes(['VEC-01', 'VEC-02', 'VEC-03']),
+    'VEC-01 ~ VEC-03')
+  assert.equal(
+    compressStageCodes(['VEC-SP01', 'VEC-SP03', 'VEC-SP02']),
+    'VEC-SP01 ~ VEC-SP03')
+  assert.equal(
+    compressStageCodes(['VEC-A', 'VEC-B', 'VEC-C', 'VEC-D']),
+    'VEC-A ~ VEC-D')
+  assert.equal(
+    compressStageCodes(['VEC-A', 'VEC-C']),
+    'VEC-A、VEC-C')
+  // 数字段与字母段同前缀时不能互相吞并
+  assert.equal(
+    compressStageCodes(['VEC-01', 'VEC-02', 'VEC-A']),
+    'VEC-01 ~ VEC-02 / VEC-A')
+  // 认不出来的写法原样留着，不静默丢
+  assert.equal(compressStageCodes(['VEC-01B']), 'VEC-01B')
+})
+
+test('mapRawToDailyCard keeps every stage group of a 矢量突破 style board', () => {
+  const card = mapRawToDailyCard({
+    ...RAW_FIXTURE,
+    stageBlocks: [
+      {
+        title: '新增关卡',
+        lead: '矢量突破#3 「拟生态」',
+        groups: [
+          { title: '核心突破', codes: Array.from({ length: 12 }, (_, i) => `VEC-${String(i + 1).padStart(2, '0')} 关卡`) },
+          { title: '全力以赴', codes: ['VEC-A 卓绝之巅', 'VEC-B 高优先通道', 'VEC-C 惊吓幕后', 'VEC-D 挽救治疗'] },
+          { title: '特别战线', codes: ['VEC-SP01 重力危机', 'VEC-SP02 心中热火', 'VEC-SP03 馆藏珍品', 'VEC-SP09 人气巡演', 'VEC-SP10 后院死局', 'VEC-SP04 明星靶场', 'VEC-SP11 影院出口', 'VEC-SP12 四号站台', 'VEC-SP05 难以相交', 'VEC-SP06 林间小憩', 'VEC-SP07 荒废矿道', 'VEC-SP13 紧急夺还', 'VEC-SP14 乙醇暴动', 'VEC-SP08 一意孤行', 'VEC-SP15 刺耳机床', 'VEC-SP16 最终愿望'] },
+        ],
+      },
+    ],
+  }, { now: NOW })
+
+  assert.deepEqual(card.stageGroups, [
+    { title: '核心突破', codes: 'VEC-01 ~ VEC-12' },
+    { title: '全力以赴', codes: 'VEC-A ~ VEC-D' },
+    { title: '特别战线', codes: 'VEC-SP01 ~ VEC-SP16' },
+  ])
+  assert.match(card.stageLine, /特别战线（VEC-SP01 ~ VEC-SP16）/)
+})
+
 // 「特别开放」窗口：首页「每日开放」只剩一行「资源收集所有关卡全天开放中，N后结束」
 const ALL_OPEN_FIXTURE = {
   ...RAW_FIXTURE,

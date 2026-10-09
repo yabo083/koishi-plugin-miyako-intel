@@ -156,24 +156,52 @@ export function splitCollectValues(text: string) {
   return text.split(/\s*\/\s*/).map((item) => item.trim()).filter(Boolean)
 }
 
+/**
+ * 把关卡号压成一行：同前缀的连续数字压成 `A-01 ~ A-12`，不连续就逐项列出。
+ * 号段可能带字母后缀（`VEC-SP01`）或整段是字母（`VEC-A`）——旧实现只认 `前缀-纯数字`，
+ * 会把这两类整个丢掉（2026-10-09「全力以赴 / 特别战线」两行只剩小标题就是这个原因）。
+ * 完全不认识的写法原样保留，宁可列出来也不静默丢数据。
+ */
 export function compressStageCodes(codes: string[]) {
-  const groups = new Map<string, Array<{ n: number; raw: string }>>()
+  const numeric = new Map<string, Array<{ n: number; token: string }>>()
+  const lettered = new Map<string, string[]>()
+  const unknown: string[] = []
   for (const code of codes) {
-    const match = code.match(/^(.*?)-(\d+)$/)
-    if (!match) continue
-    const list = groups.get(match[1]) || []
-    list.push({ n: Number(match[2]), raw: match[2] })
-    groups.set(match[1], list)
+    const digits = code.match(/^(.*?)-([A-Za-z]*)(\d+)$/)
+    if (digits) {
+      const key = `${digits[1]}-${digits[2]}`
+      const list = numeric.get(key) || []
+      list.push({ n: Number(digits[3]), token: digits[3] })
+      numeric.set(key, list)
+      continue
+    }
+    const letters = code.match(/^(.*?)-([A-Za-z]+)$/)
+    if (letters) {
+      const list = lettered.get(letters[1]) || []
+      list.push(letters[2])
+      lettered.set(letters[1], list)
+      continue
+    }
+    if (code) unknown.push(code)
   }
   const parts: string[] = []
-  for (const [prefix, entries] of groups) {
+  for (const [key, entries] of numeric) {
     const sorted = [...entries].sort((a, b) => a.n - b.n)
     const nums = sorted.map((entry) => entry.n)
     const contiguous = nums.length > 1 && nums[nums.length - 1] - nums[0] + 1 === nums.length
     parts.push(contiguous
-      ? `${prefix}-${sorted[0].raw} ~ ${prefix}-${sorted[sorted.length - 1].raw}`
-      : sorted.map((entry) => `${prefix}-${entry.raw}`).join('、'))
+      ? `${key}${sorted[0].token} ~ ${key}${sorted[sorted.length - 1].token}`
+      : sorted.map((entry) => `${key}${entry.token}`).join('、'))
   }
+  for (const [prefix, tokens] of lettered) {
+    const sorted = [...tokens].sort()
+    const contiguous = sorted.length > 1
+      && sorted.every((token, index) => index === 0 || token.charCodeAt(0) === sorted[index - 1].charCodeAt(0) + 1)
+    parts.push(contiguous
+      ? `${prefix}-${sorted[0]} ~ ${prefix}-${sorted[sorted.length - 1]}`
+      : sorted.map((token) => `${prefix}-${token}`).join('、'))
+  }
+  parts.push(...unknown)
   return parts.join(' / ')
 }
 
