@@ -321,6 +321,11 @@ function runChromeDump(bin, url) {
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
+      // Keep Chrome off the session-bus SecretService: where gnome-keyring-daemon owns
+      // org.freedesktop.secrets without answering, the default password store blocks each
+      // launch for the 25s D-Bus default timeout. Puppeteer passes both flags for this reason.
+      '--password-store=basic',
+      '--use-mock-keychain',
       '--lang=zh-CN',
       `--user-agent=${browserUserAgent}`,
       '--dump-dom',

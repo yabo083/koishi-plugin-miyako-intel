@@ -52,9 +52,30 @@ async function readSeedMetadata() {
 }
 
 async function fetchSourceUpdatedAt() {
-  const html = process.env.STORY_HTML_FETCHER === 'fetch'
-    ? await fetchText(`https://warfarin.wiki/${language}`)
-    : await fetchTextWithChrome(`https://warfarin.wiki/${language}`)
+  const url = `https://warfarin.wiki/${language}`
+  // The date is server-rendered, so a plain GET answers in ~1s; headless Chrome costs a full
+  // browser launch per attempt (and on hosts whose session bus owns org.freedesktop.secrets
+  // without answering, the launch itself burns 25s of D-Bus timeout). Chrome stays as the
+  // fallback for client-side rendering or a JS challenge.
+  // STORY_HTML_FETCHER pins a single engine: 'fetch' or 'chrome'.
+  const engines = process.env.STORY_HTML_FETCHER === 'fetch'
+    ? [fetchText]
+    : process.env.STORY_HTML_FETCHER === 'chrome'
+      ? [fetchTextWithChrome]
+      : [fetchText, fetchTextWithChrome]
+  let lastError
+  for (const engine of engines) {
+    try {
+      return parseSourceUpdatedAt(await engine(url))
+    } catch (error) {
+      lastError = error
+      console.log(`Warfarin homepage via ${engine.name} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw lastError
+}
+
+function parseSourceUpdatedAt(html) {
   const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
   const match = text.match(/最后更新\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/)
     || text.match(/Last updated\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i)
@@ -89,7 +110,11 @@ async function fetchTextWithChrome(url) {
   const errors = []
   for (const bin of candidates) {
     try {
-      return await runCommand(bin, ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--no-sandbox', '--lang=zh-CN', `--user-agent=${browserUserAgent}`, '--dump-dom', url])
+      // --password-store=basic/--use-mock-keychain keep Chrome away from the session-bus
+      // SecretService (org.freedesktop.secrets). Where gnome-keyring-daemon owns that name but
+      // does not answer, the default password store blocks every launch for the 25s D-Bus
+      // default timeout, which alone blows the 30s budget here. Puppeteer passes both too.
+      return await runCommand(bin, ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--no-sandbox', '--password-store=basic', '--use-mock-keychain', '--lang=zh-CN', `--user-agent=${browserUserAgent}`, '--dump-dom', url])
     } catch (error) {
       errors.push(`${bin}: ${error instanceof Error ? error.message : String(error)}`)
     }
