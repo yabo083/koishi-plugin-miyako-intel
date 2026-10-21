@@ -154,13 +154,31 @@ function createRichContentAnchors(slug: string, data: any, scope: string, label:
   return [makeStoryAnchor(slug, 0, texts.join('\n\n'), `${label}：${name}`, scope)]
 }
 
+// characterTable.profileRecord / profileVoice 都是对象数组（档案分卷、语音条目），
+// 直接丢进字符串会得到 "[object Object]"，必须按各自字段拼成可读行。
 function createOperatorAnchors(slug: string, data: any): StoryAnchor[] {
-  const texts = [
-    ...extractFromTable(data?.characterTable, 'name', 'profileVoice'),
-    ...extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc'),
-  ]
-  const name = stripTags(data?.itemTable?.name || data?.characterTable?.name || '') || slug
+  const character = data?.characterTable || {}
+  const texts = extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc')
+  for (const record of objectList(character.profileRecord)) {
+    const title = stripTags(record.recordTitle)
+    const text = stripTags(record.recordDesc)
+    if (!text) continue
+    texts.push(title ? `${title}：${text}` : text)
+  }
+  for (const voice of objectList(character.profileVoice)) {
+    const title = stripTags(voice.voiceTitle)
+    const text = stripTags(voice.voiceDesc)
+    if (!text) continue
+    texts.push(title ? `${title}：${text}` : text)
+  }
+  const name = stripTags(data?.itemTable?.name || character.name || '') || slug
   return [makeStoryAnchor(slug, 0, texts.join('\n'), `干员资料：${name}`, 'operators')]
+}
+
+function objectList(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+    : []
 }
 
 function createItemLikeAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
@@ -244,6 +262,8 @@ function naturalKey(value: unknown) {
   return String(value || '').replace(/\d+/g, (part) => part.padStart(8, '0'))
 }
 
-function stripTags(text: string) {
-  return String(text || '').replace(/<image>[^<]*<\/image>/gi, '').replace(/<[^>]*>/g, '').trim()
+// 只接受标量：对象/数组直接 String() 会得到 "[object Object]"，宁可丢弃也不能污染正文。
+function stripTags(text: unknown) {
+  if (typeof text !== 'string' && typeof text !== 'number') return ''
+  return String(text).replace(/<image>[^<]*<\/image>/gi, '').replace(/<[^>]*>/g, '').trim()
 }

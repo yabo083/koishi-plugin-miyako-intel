@@ -499,7 +499,8 @@ test('story bundle builder publishes bundled seed when remote bundle is stale', 
   assert.match(result.stdout, /Warfarin story bundle bundled seed publish:/)
   const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.manifest.json'), 'utf8'))
   const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
-  assert.equal(manifest.parserVersion, 4)
+  const builderVersion = Number(/const parserVersion = (\d+)/.exec(fs.readFileSync(path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), 'utf8'))[1])
+  assert.equal(manifest.parserVersion, builderVersion)
   assert.ok(manifest.count >= 2200)
   assert.equal(manifest.sourceReport.refreshed, anchors.length)
   assert.equal(anchors.some(anchor => anchor.source === 'Baker对话：独行之路'), true)
@@ -565,7 +566,7 @@ test('story bundle preflight skips dependency installation when source is unchan
     globalThis.fetch = async (url) => {
       const value = String(url)
       if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
-      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: 4, sourceUpdatedAt: '2026-05-14', count: 4047 })
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: 9999, sourceUpdatedAt: '2026-05-14', count: 4047 })
       throw new Error('unexpected fetch: ' + value)
     }
   `)
@@ -776,6 +777,38 @@ test('Warfarin Baker parser groups API option branches and keeps character metad
   assert.match(baker[0].content, /简介：正在解决问题或前往问题的路上。/)
   assert.match(baker[0].content, /选项：你该去休息了。 \| 别再熬夜巡逻了。/)
   assert.equal((baker[0].content.match(/选项：/g) || []).length, 1)
+})
+
+test('Warfarin operator parser renders profile records and voice lines instead of stringifying objects', () => {
+  const { createWarfarinAnchorsFromDetail } = loadStoryParsers()
+
+  const [anchor] = createWarfarinAnchorsFromDetail('operators', 'tangtang', {
+    characterTable: {
+      name: '汤汤',
+      profileRecord: [
+        { recordTitle: '基础档案', recordDesc: '【代号】汤汤\n【性别】女\n【种族】菲林' },
+        { recordTitle: '档案资料·一', recordDesc: '清波寨的大当家。' },
+      ],
+      profileVoice: [
+        { voiceTitle: '行动准备1', voiceDesc: '黑面煞，你要去哪里？带上我呀。' },
+        { voiceTitle: '编入队伍', voiceDesc: '大当家在此，都听我指挥！' },
+      ],
+    },
+    itemTable: {
+      name: '汤汤',
+      desc: '汤汤是一名使用手铳的术师干员，可造成寒冷属性的伤害。',
+      decoDesc: '汤汤的聘用证明。',
+    },
+  })
+
+  assert.doesNotMatch(anchor.content, /\[object Object\]/)
+  assert.equal(anchor.source, '干员资料：汤汤')
+  assert.match(anchor.content, /汤汤是一名使用手铳的术师干员/)
+  assert.match(anchor.content, /基础档案：【代号】汤汤/)
+  assert.match(anchor.content, /档案资料·一：清波寨的大当家。/)
+  assert.match(anchor.content, /行动准备1：黑面煞，你要去哪里？带上我呀。/)
+  assert.equal((anchor.content.match(/汤汤是一名使用手铳/g) || []).length, 1)
+  assert.deepEqual(anchor.full_text, [{ speaker: '资料', text: anchor.content }])
 })
 
 test('Warfarin item parser skips achievement item shells in favor of medal anchors', () => {
