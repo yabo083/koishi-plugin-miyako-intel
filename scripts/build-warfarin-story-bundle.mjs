@@ -69,16 +69,17 @@ for (const category of categories) {
   log(`Warfarin story bundle category start: ${category} slugs=${slugs.length}`)
   const categoryStats = { done: 0, failed: 0, skipped: 0, refreshed: 0, lastLogAt: Date.now() }
   const results = await mapWithConcurrency(slugs, concurrency, async (slug) => {
+    const sourceKey = `${normalizeScope(category)}/${slug}`
     try {
       const data = await fetchDetail(language, category, slug)
       const rawSha256 = hashJson(data)
-      const sourceKey = `${normalizeScope(category)}/${slug}`
       const previous = previousByKey.get(sourceKey)
       if (previous?.raw_sha256 === rawSha256) return { skipped: true, anchors: previous.anchors }
       const nextAnchors = createWarfarinAnchorsFromDetail(category, slug, data).map(anchor => ({ ...anchor, source_key: sourceKey, raw_sha256: rawSha256 }))
       return { skipped: false, anchors: nextAnchors }
     } catch (error) {
-      return { error: `${category}/${slug}: ${error instanceof Error ? error.message : String(error)}` }
+      // 单条详情抓取失败时沿用上一版锚点，避免一次源站抖动就让已发布的数据包静默缩水。
+      return { error: `${category}/${slug}: ${error instanceof Error ? error.message : String(error)}`, anchors: previousByKey.get(sourceKey)?.anchors || [] }
     }
   }, rateLimitMs, (result) => {
     categoryStats.done++
@@ -95,6 +96,10 @@ for (const category of categories) {
     if (result?.error) {
       failed++
       if (failures.length < 5) failures.push(result.error)
+      if (result?.anchors?.length) {
+        anchors.push(...result.anchors)
+        skipped += result.anchors.length
+      }
       continue
     }
     anchors.push(...(result?.anchors || []))

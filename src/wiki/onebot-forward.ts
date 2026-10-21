@@ -164,11 +164,27 @@ async function sendOneBotForwardNodes(session: any, messages: OneBotForwardNode[
   return false
 }
 
-/** 转发接口偶发失败，隔 2s 重试一次；重试仍失败就交给上层改走普通文本 */
+export class ForwardUncertainError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message)
+    this.name = 'ForwardUncertainError'
+    if (cause) (this as Error & { cause?: unknown }).cause = cause
+  }
+}
+
+// 超时/中断无法判断消息是否已经送达；重试会发出重复卡片，所以这类错误不再重试、也不走文本兜底。
+function isUncertainForwardError(error: unknown) {
+  const name = error instanceof Error ? error.name : ''
+  const message = error instanceof Error ? error.message : String(error || '')
+  return name === 'TimeoutError' || name === 'AbortError' || /\btimed? ?out\b|\baborted\b/i.test(message)
+}
+
+/** 转发接口偶发失败，隔 2s 重试一次；结果未知的失败直接抛出，交给上层决定是否发送 */
 export async function sendOneBotForwardNodesWithRetry(session: any, messages: OneBotForwardNode[], wikiConfig: WikiConfig) {
   try {
     return await sendOneBotForwardNodes(session, messages, wikiConfig)
-  } catch {
+  } catch (error) {
+    if (isUncertainForwardError(error)) throw new ForwardUncertainError('合并转发结果未知（可能已送达），不再重试', error)
     await new Promise((resolve) => setTimeout(resolve, FORWARD_RETRY_DELAY_MS))
     return sendOneBotForwardNodes(session, messages, wikiConfig)
   }

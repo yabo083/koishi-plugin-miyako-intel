@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult, foldVariantDuplicates } from './warfarin-wiki'
@@ -180,9 +180,18 @@ export class WarfarinStorySearchService {
     const anchors = (Array.isArray(payload) ? payload : payload?.anchors || []).filter(isStoryAnchor)
     if (!anchors.length) throw new Error('story bundle has no usable anchors')
     if (this.isOfficialBundle(manifest) && this.isOlderThanBundledSeed(anchors.length)) throw new Error(`story bundle is older than bundled seed: ${anchors.length} < ${bundledStorySeedCount}`)
-    await rm(this.anchorsDir(), { recursive: true, force: true })
-    await mkdir(this.anchorsDir(), { recursive: true })
-    await writeFile(join(this.anchorsDir(), 'bundle.json'), JSON.stringify(anchors, null, 2))
+    const anchorsDir = this.anchorsDir()
+    await mkdir(anchorsDir, { recursive: true })
+    // 先写临时文件再 rename：中途崩溃/写盘失败时旧的 bundle.json 仍然完好，
+    // 不会出现「目录已被清空、新文件还没写完」的数据丢失窗口。
+    const bundlePath = join(anchorsDir, 'bundle.json')
+    const temporaryPath = `${bundlePath}.${process.pid}.tmp`
+    await writeFile(temporaryPath, JSON.stringify(anchors, null, 2))
+    await rename(temporaryPath, bundlePath)
+    for (const file of await readdir(anchorsDir)) {
+      if (file === 'bundle.json') continue
+      await rm(join(anchorsDir, file), { force: true })
+    }
     this.anchors = anchors
     this.loaded = true
     const updatedAt = new Date().toISOString()
