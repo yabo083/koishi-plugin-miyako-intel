@@ -1,5 +1,6 @@
 // OneBot/NapCat 合并转发：把多段文本拆成节点、发群/发私聊、失败重试一次
 import { Config as RuntimeConfig } from '../types'
+import { splitWikiMessage } from './message-split'
 
 type WikiConfig = RuntimeConfig['wiki']
 
@@ -21,14 +22,16 @@ export function isOneBotPrivateChannel(value: unknown) {
   return /^onebot:private:\d+$/i.test(String(value || '').trim())
 }
 
-/** 每个节点最多 groupForwardNodeLineLimit 行，超长文本按行切开 */
+/** 每个节点最多 groupForwardNodeLineLimit 行、且不超过单条消息字符上限，超长文本先切片再按行分组 */
 export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig) {
   const limit = Math.max(3, Math.min(80, Number(wikiConfig.groupForwardNodeLineLimit || 20)))
   const chunks: string[] = []
   for (const text of texts) {
-    const lines = String(text || '').split(/\r?\n/)
-    for (let index = 0; index < lines.length; index += limit) {
-      chunks.push(lines.slice(index, index + limit).join('\n').trim())
+    for (const piece of splitWikiMessage(text)) {
+      const lines = piece.split(/\r?\n/)
+      for (let index = 0; index < lines.length; index += limit) {
+        chunks.push(lines.slice(index, index + limit).join('\n').trim())
+      }
     }
   }
   return chunks.filter(Boolean).map((content) => ({
@@ -79,12 +82,4 @@ export async function sendOneBotForwardWithRetry(session: any, texts: string[], 
     await new Promise((resolve) => setTimeout(resolve, FORWARD_RETRY_DELAY_MS))
     return sendOneBotForward(session, texts, wikiConfig)
   }
-}
-
-/** 转发彻底失败时只发第一段并说明，避免把十几条消息刷进群里 */
-export function buildForwardFallbackMessages(messages: string[]) {
-  if (messages.length <= 1) return messages
-  return [
-    `${messages[0]}\n（合并转发发送失败，已仅发送第 1/${messages.length} 段；可稍后重试获取完整内容。）`,
-  ]
 }

@@ -20,7 +20,7 @@ import { registerConsolePanel } from './console/status'
 
 export { getPrtsDayKey }
 export { Config }
-export { buildForwardFallbackMessages } from './wiki/onebot-forward'
+export { splitWikiMessage } from './wiki/message-split'
 export { foldCrossSourceDuplicates } from './wiki/fold'
 export type { Config as ArknightsIntelConfig } from './types'
 
