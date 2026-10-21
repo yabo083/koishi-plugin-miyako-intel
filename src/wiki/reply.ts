@@ -3,7 +3,7 @@ import { ScopedLogger } from '../core/logger'
 import { sanitizeForwardError } from '../core/errors'
 import { Config as RuntimeConfig } from '../types'
 import { WikiReplyPayload } from './fold'
-import { batchOneBotForwardNodes, buildOneBotForwardNodes, canSendSingleCardForward, sendOneBotForwardNodesWithRetry } from './onebot-forward'
+import { batchOneBotForwardNodes, buildOneBotForwardNodes, canSendSingleCardForward, ForwardUncertainError, sendOneBotForwardNodesWithRetry } from './onebot-forward'
 import { splitWikiMessage } from './message-split'
 
 type WikiConfig = RuntimeConfig['wiki']
@@ -42,6 +42,11 @@ export function createWikiReplySender(wikiConfig: WikiConfig, logger: ScopedLogg
         try {
           forwardOk = await sendOneBotForwardNodesWithRetry(session, batch, wikiConfig) === true
         } catch (error) {
+          // 超时/中断时卡片可能已经送达，再发文本会让同一份详情重复刷屏。
+          if (error instanceof ForwardUncertainError) {
+            logger.warn(`Warfarin Wiki 合并转发结果未知，跳过重复发送：${sanitizeForwardError(error)}`)
+            return undefined
+          }
           logger.warn(`Warfarin Wiki 合并转发发送失败，回退普通文本：${sanitizeForwardError(error)}`)
           forwardOk = false
         }

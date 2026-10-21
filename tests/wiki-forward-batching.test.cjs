@@ -122,3 +122,21 @@ test('group sessions send the same single card through the group API', async () 
   assert.equal(calls[0].params.group_id, 10001)
   assert.ok(calls[0].params.news.length > 0)
 })
+
+test('a timed-out forward is neither retried nor duplicated as plain text', async () => {
+  let calls = 0
+  const plain = []
+  const timeout = Object.assign(new Error('request timed out'), { name: 'TimeoutError' })
+  const session = {
+    platform: 'onebot',
+    userId: '2657455842',
+    onebot: { async _get() { calls++; throw timeout } },
+    async send(message) { plain.push(message) },
+  }
+  const sender = createWikiReplySender(config, logger)
+  const reply = await sender.send(session, operatorDetail(4800))
+
+  assert.equal(reply, undefined)
+  assert.equal(calls, 1)
+  assert.equal(plain.length, 0)
+})

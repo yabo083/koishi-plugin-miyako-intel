@@ -978,3 +978,77 @@ test('Warfarin mission parser keeps legacy dialog[] and radioText[] fields worki
   assert.ok(anchor.content.includes('主持人：你好，管理员。'))
   assert.ok(anchor.content.includes('通讯中 / 管理员：旧字段通讯。'))
 })
+
+test('story bundle update replaces bundle atomically and drops stale seed files', async () => {
+  const zlib = require('node:zlib')
+  const crypto = require('node:crypto')
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-atomic-'))
+  const anchorsDir = path.join(baseDir, 'story', 'cn', 'anchors')
+  fs.mkdirSync(anchorsDir, { recursive: true })
+  fs.writeFileSync(path.join(anchorsDir, 'bundle.json'), JSON.stringify([{ anchor_id: 'old_0', content: '旧内容', source: '资料：旧', source_ref: '资料：旧', scope: 'lore', relevance: 1, full_text: [] }]))
+  fs.writeFileSync(path.join(anchorsDir, 'seed.json'), JSON.stringify([{ anchor_id: 'seed_0', content: '种子', source: '资料：种子', source_ref: '资料：种子', scope: 'lore', relevance: 1, full_text: [] }]))
+  const nextAnchors = [{ anchor_id: 'new_0', content: '新内容', source: '资料：新', source_ref: '资料：新', scope: 'lore', relevance: 1, full_text: [] }]
+  const compressed = zlib.gzipSync(JSON.stringify(nextAnchors))
+  const manifest = { language: 'cn', sha256: crypto.createHash('sha256').update(compressed).digest('hex'), url: 'https://example.test/story.json.gz', updatedAt: '2026-05-14T00:00:00.000Z', sourceUpdatedAt: '2026-05-14' }
+
+  const { WarfarinStorySearchService } = loadStorySearch()
+  const service = new WarfarinStorySearchService({
+    baseDir,
+    dataDirectory: 'story',
+    language: 'cn',
+    timeoutMs: 1000,
+    bundleManifestUrl: 'https://example.test/story.manifest.json',
+    fetch: async (url) => (String(url).endsWith('.manifest.json') ? JSON.stringify(manifest) : compressed),
+  })
+
+  const report = await service.update()
+  assert.equal(report.refreshed, 1)
+  const files = fs.readdirSync(anchorsDir)
+  assert.deepEqual(files, ['bundle.json'])
+  const stored = JSON.parse(fs.readFileSync(path.join(anchorsDir, 'bundle.json'), 'utf8'))
+  assert.equal(stored[0].anchor_id, 'new_0')
+})
+
+test('story bundle builder reuses the previous anchors when a detail fetch fails', () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-reuse-'))
+  const outDir = path.join(baseDir, 'out')
+  const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  fs.writeFileSync(mockFile, `
+    import { gzipSync } from 'node:zlib'
+    import { createHash } from 'node:crypto'
+    const previous = [{
+      anchor_id: 'c27m5_0', content: '旧：火锅。', source: '任务剧情：共饮一江水', source_ref: '任务剧情：共饮一江水',
+      scope: 'missions', relevance: 1, full_text: [], source_key: 'missions/c27m5', raw_sha256: 'old-sha',
+    }]
+    const compressed = gzipSync(JSON.stringify(previous))
+    const sha256 = createHash('sha256').update(compressed).digest('hex')
+    function response(payload, ok = true) {
+      return { ok, status: ok ? 200 : 404, async json() { return payload }, async text() { return String(payload) }, async arrayBuffer() { return compressed } }
+    }
+    globalThis.fetch = async (url) => {
+      const value = String(url)
+      if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: 6, sourceUpdatedAt: '2026-05-14', count: 1, sha256, url: 'https://example.test/previous.json.gz' })
+      if (value === 'https://example.test/previous.json.gz') return response(null)
+      if (value === 'https://api.warfarin.wiki/v1/cn/missions') return response({ data: [{ slug: 'c27m5' }, { slug: 'c27m6' }] })
+      if (value.endsWith('/missions/c27m5')) throw new Error('source flake')
+      if (value.endsWith('/missions/c27m6')) return response({ data: { mission: { name: '再饮一江水' }, dialog: [{ actorName: '管理员', dialogText: '热汤。' }] } })
+      throw new Error('unexpected fetch: ' + value)
+    }
+  `)
+
+  const result = childProcess.spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), outDir], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, STORY_API_FETCHER: 'fetch', STORY_CATEGORIES: 'missions', STORY_HTML_FETCHER: 'fetch', STORY_UPDATE_RATE_LIMIT_MS: '0', STORY_FORCE_UPDATE: '1' },
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  const anchors = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(outDir, 'warfarin-story-cn.json.gz'))).toString('utf8'))
+  const reused = anchors.find(anchor => anchor.anchor_id === 'c27m5_0')
+  const refreshed = anchors.find(anchor => anchor.anchor_id === 'c27m6_0')
+  assert.ok(reused, 'failed slug should fall back to the previous anchor')
+  assert.match(reused.content, /火锅/)
+  assert.ok(refreshed, 'healthy slug should be refreshed')
+  assert.match(refreshed.content, /热汤/)
+})
