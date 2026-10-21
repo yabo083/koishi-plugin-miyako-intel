@@ -1,15 +1,15 @@
-// 回复发送：群聊按配置走 OneBot 合并转发，失败或未启用时按长度分片发普通文本
+// 回复发送：群聊/私聊统一走 OneBot 合并转发（按 4000 字拆多张卡片），转发不可用时按长度分片发普通文本
 import { ScopedLogger } from '../core/logger'
 import { sanitizeForwardError } from '../core/errors'
 import { Config as RuntimeConfig } from '../types'
 import { WikiReplyPayload } from './fold'
-import { sendOneBotForwardWithRetry } from './onebot-forward'
+import { batchOneBotForwardNodes, buildOneBotForwardNodes, sendOneBotForwardNodesWithRetry } from './onebot-forward'
 import { splitWikiMessage } from './message-split'
 
 type WikiConfig = RuntimeConfig['wiki']
 
 // NapCat/QQ 对单条消息有硬上限：实测 9 KB 的私聊文本直接返回 result:10 且不落库，
-// 合并转发在私聊也可能不可用，所以普通文本一律先切片再发。
+// 合并转发单张也有总量上限（5000 字可发 / 6000 字失败），所以两条路径都要切。
 
 /** 群聊、或 OneBot 私聊（转发在私聊也能用）才走合并转发 */
 function shouldSendForward(session: any, wikiConfig: WikiConfig) {
@@ -29,14 +29,28 @@ export function createWikiReplySender(wikiConfig: WikiConfig, logger: ScopedLogg
   async function send(session: any, payload: WikiReplyPayload) {
     const messages = (Array.isArray(payload) ? payload : [payload]).filter(Boolean) as string[]
     if (!messages.length) return Array.isArray(payload) ? undefined : payload || undefined
+    const pending: string[] = []
     if (shouldSendForward(session, wikiConfig)) {
-      try {
-        if (await sendOneBotForwardWithRetry(session, messages, wikiConfig)) return undefined
-      } catch (error) {
-        logger.warn(`Warfarin Wiki 合并转发发送失败，回退普通文本：${sanitizeForwardError(error)}`)
+      const batches = batchOneBotForwardNodes(buildOneBotForwardNodes(messages, wikiConfig))
+      let forwardOk = batches.length > 0
+      for (const batch of batches) {
+        if (!forwardOk) {
+          pending.push(...batch.map((node) => node.data.content))
+          continue
+        }
+        try {
+          forwardOk = await sendOneBotForwardNodesWithRetry(session, batch, wikiConfig) === true
+        } catch (error) {
+          logger.warn(`Warfarin Wiki 合并转发发送失败，回退普通文本：${sanitizeForwardError(error)}`)
+          forwardOk = false
+        }
+        if (!forwardOk) pending.push(...batch.map((node) => node.data.content))
       }
+      if (forwardOk) return undefined
+    } else {
+      pending.push(...messages)
     }
-    const chunks = messages.flatMap((message) => splitWikiMessage(message))
+    const chunks = pending.flatMap((message) => splitWikiMessage(message))
     if (!chunks.length) return undefined
     if (chunks.length === 1) return chunks[0]
     for (const chunk of chunks) await session.send(chunk)

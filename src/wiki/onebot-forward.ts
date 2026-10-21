@@ -22,8 +22,13 @@ export function isOneBotPrivateChannel(value: unknown) {
   return /^onebot:private:\d+$/i.test(String(value || '').trim())
 }
 
+export interface OneBotForwardNode {
+  type: 'node'
+  data: { name: string; uin: number | string; content: string }
+}
+
 /** 每个节点最多 groupForwardNodeLineLimit 行、且不超过单条消息字符上限，超长文本先切片再按行分组 */
-export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig) {
+export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig): OneBotForwardNode[] {
   const limit = Math.max(3, Math.min(80, Number(wikiConfig.groupForwardNodeLineLimit || 20)))
   const chunks: string[] = []
   for (const text of texts) {
@@ -43,10 +48,32 @@ export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig)
     },
   }))
 }
+
+// NapCat 实测：单张合并转发总正文 5000 字可发、6000 字报「发送转发消息失败」，
+// 所以按 4000 字一批拆成多张转发卡片，而不是一张塞满整个详情。
+export const FORWARD_BATCH_CHARS = 4000
+
+export function batchOneBotForwardNodes(nodes: OneBotForwardNode[], maxChars = FORWARD_BATCH_CHARS): OneBotForwardNode[][] {
+  const batches: OneBotForwardNode[][] = []
+  let current: OneBotForwardNode[] = []
+  let size = 0
+  for (const node of nodes) {
+    const length = node.data.content.length
+    if (current.length && size + length > maxChars) {
+      batches.push(current)
+      current = []
+      size = 0
+    }
+    current.push(node)
+    size += length
+  }
+  if (current.length) batches.push(current)
+  return batches
+}
+
 /** 群优先、私聊兜底；两套命名（驼峰 / 下划线）都试，适配不同 OneBot 实现 */
-async function sendOneBotForward(session: any, texts: string[], wikiConfig: WikiConfig) {
+async function sendOneBotForwardNodes(session: any, messages: OneBotForwardNode[], wikiConfig: WikiConfig) {
   const onebot = session?.onebot || session?.bot?.internal
-  const messages = buildOneBotForwardNodes(texts, wikiConfig)
   const groupId = session?.guildId
     || (session?.subtype === 'group' ? session?.channelId || session?.cid : '')
     || (isOneBotGroupChannel(session?.cid) ? session.cid : '')
@@ -74,12 +101,12 @@ async function sendOneBotForward(session: any, texts: string[], wikiConfig: Wiki
   return false
 }
 
-/** 转发接口偶发失败，隔 2s 重试一次再交给上层回退 */
-export async function sendOneBotForwardWithRetry(session: any, texts: string[], wikiConfig: WikiConfig) {
+/** 转发接口偶发失败，隔 2s 重试一次；重试仍失败就交给上层改走普通文本 */
+export async function sendOneBotForwardNodesWithRetry(session: any, messages: OneBotForwardNode[], wikiConfig: WikiConfig) {
   try {
-    return await sendOneBotForward(session, texts, wikiConfig)
+    return await sendOneBotForwardNodes(session, messages, wikiConfig)
   } catch {
     await new Promise((resolve) => setTimeout(resolve, FORWARD_RETRY_DELAY_MS))
-    return sendOneBotForward(session, texts, wikiConfig)
+    return sendOneBotForwardNodes(session, messages, wikiConfig)
   }
 }
