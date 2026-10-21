@@ -19,3 +19,6 @@ coverage/
 .qa-*
 letter-e2e-*.png
 design/weekly-prototype/qa-*.png
+
+# 本地临时产物（排障脚本、重打包中间件）
+tmp/
