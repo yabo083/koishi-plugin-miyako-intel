@@ -10,7 +10,7 @@ import { bundledStorySeedCount, loadBundledStorySeed } from '../lib/services/war
 const language = process.env.STORY_LANGUAGE || 'cn'
 const repository = process.env.GITHUB_REPOSITORY || 'yabo083/koishi-plugin-miyako-intel'
 const releaseTag = process.env.STORY_RELEASE_TAG || 'warfarin-story-latest'
-const parserVersion = 5
+const parserVersion = 6
 const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
 const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)

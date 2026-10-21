@@ -27,17 +27,66 @@ export interface OneBotForwardNode {
   data: { name: string; uin: number | string; content: string }
 }
 
-/** 每个节点最多 groupForwardNodeLineLimit 行、且不超过单条消息字符上限，超长文本先切片再按行分组 */
+// NapCat 默认把每个节点的全文塞进合并转发的 ARK 预览（news），正文一多客户端就拒收
+// （实测 5000 字可发 / 6000 字失败）；改传空 news 后 25 个节点、10798 字仍能单张卡片发出。
+// 因此优先走原始 API 并带 news: []，拿不到原始 API 时才退回按 5000 字拆卡片。
+export const FORWARD_BATCH_CHARS = 5000
+const FORWARD_NODE_CHARS = 4000
+
+type ForwardTransport = Record<string, unknown> & {
+  _get?: (action: string, params: Record<string, unknown>) => Promise<unknown>
+}
+
+function forwardTransport(session: unknown): ForwardTransport | undefined {
+  if (!session || typeof session !== 'object') return undefined
+  const value = session as { onebot?: unknown; bot?: { internal?: unknown } }
+  const onebot = value.onebot ?? value.bot?.internal
+  return onebot && typeof onebot === 'object' ? onebot as ForwardTransport : undefined
+}
+
+/** Koishi 的 OneBot internal 才有 _get，可透传 NapCat 的 news 扩展字段 */
+export function canSendSingleCardForward(session: unknown) {
+  return typeof forwardTransport(session)?._get === 'function'
+}
+
+/** 有分节（空行）时按章节装节点；没有分节（对话体）时退回按行分组 */
+function splitForwardPieces(text: string, lineLimit: number): string[] {
+  const source = String(text || '').trim()
+  if (!source) return []
+  const sections = source.split(/\n{2,}/).map((section) => section.trim()).filter(Boolean)
+  if (sections.length <= 1) {
+    const pieces: string[] = []
+    for (const chunk of splitWikiMessage(source, FORWARD_NODE_CHARS)) {
+      const lines = chunk.split(/\r?\n/)
+      for (let index = 0; index < lines.length; index += lineLimit) {
+        pieces.push(lines.slice(index, index + lineLimit).join('\n').trim())
+      }
+    }
+    return pieces.filter(Boolean)
+  }
+  const pieces: string[] = []
+  for (const section of sections) {
+    if (section.length > FORWARD_NODE_CHARS) pieces.push(...splitWikiMessage(section, FORWARD_NODE_CHARS))
+    else pieces.push(section)
+  }
+  // 只有标题/简介的短节（检索页头、干员简介）并进下一节，卡片里不单独占一个节点。
+  const merged: string[] = []
+  for (const piece of pieces) {
+    const last = merged[merged.length - 1]
+    if (last !== undefined && last.length < 200 && last.length + piece.length + 2 <= FORWARD_NODE_CHARS) {
+      merged[merged.length - 1] = `${last}\n\n${piece}`
+    } else {
+      merged.push(piece)
+    }
+  }
+  return merged.filter(Boolean)
+}
+
 export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig): OneBotForwardNode[] {
   const limit = Math.max(3, Math.min(80, Number(wikiConfig.groupForwardNodeLineLimit || 20)))
   const chunks: string[] = []
   for (const text of texts) {
-    for (const piece of splitWikiMessage(text)) {
-      const lines = piece.split(/\r?\n/)
-      for (let index = 0; index < lines.length; index += limit) {
-        chunks.push(lines.slice(index, index + limit).join('\n').trim())
-      }
-    }
+    chunks.push(...splitForwardPieces(text, limit))
   }
   return chunks.filter(Boolean).map((content) => ({
     type: 'node',
@@ -48,10 +97,6 @@ export function buildOneBotForwardNodes(texts: string[], wikiConfig: WikiConfig)
     },
   }))
 }
-
-// NapCat 实测：单张合并转发总正文 5000 字可发、6000 字报「发送转发消息失败」，
-// 所以按 4000 字一批拆成多张转发卡片，而不是一张塞满整个详情。
-export const FORWARD_BATCH_CHARS = 4000
 
 export function batchOneBotForwardNodes(nodes: OneBotForwardNode[], maxChars = FORWARD_BATCH_CHARS): OneBotForwardNode[][] {
   const batches: OneBotForwardNode[][] = []
@@ -77,6 +122,26 @@ async function sendOneBotForwardNodes(session: any, messages: OneBotForwardNode[
   const groupId = session?.guildId
     || (session?.subtype === 'group' ? session?.channelId || session?.cid : '')
     || (isOneBotGroupChannel(session?.cid) ? session.cid : '')
+  const userId = session?.userId || session?.uid
+    || (isOneBotPrivateChannel(session?.cid) ? session.cid : session?.channelId)
+  // 原始 API 能透传 news：空数组会让 QQ 渲染出乱码且打不开卡片，所以给每节点一条截断预览；
+  // 卡片体积只跟预览字数有关，正文仍完整留在转发包里，单张卡片可以放任意条数。
+  const transport = forwardTransport(session)
+  if (typeof transport?._get === 'function') {
+    const news = messages.map((node) => {
+      const flat = node.data.content.replace(/\s+/g, ' ').trim()
+      return { text: flat.length > 26 ? `${flat.slice(0, 26)}…` : flat }
+    })
+    if (groupId) {
+      await transport._get('send_group_forward_msg', { group_id: normalizeOneBotId(groupId), messages, news })
+      return true
+    }
+    if (userId) {
+      await transport._get('send_private_forward_msg', { user_id: normalizeOneBotId(userId), messages, news })
+      return true
+    }
+    return false
+  }
   if (groupId) {
     if (onebot?.sendGroupForwardMsg) {
       await onebot.sendGroupForwardMsg(groupId, messages)
@@ -87,8 +152,6 @@ async function sendOneBotForwardNodes(session: any, messages: OneBotForwardNode[
       return true
     }
   }
-  const userId = session?.userId || session?.uid
-    || (isOneBotPrivateChannel(session?.cid) ? session.cid : session?.channelId)
   if (!userId) return false
   if (onebot?.sendPrivateForwardMsg) {
     await onebot.sendPrivateForwardMsg(userId, messages)

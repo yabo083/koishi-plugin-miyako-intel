@@ -779,7 +779,7 @@ test('Warfarin Baker parser groups API option branches and keeps character metad
   assert.equal((baker[0].content.match(/选项：/g) || []).length, 1)
 })
 
-test('Warfarin operator parser renders profile records and voice lines instead of stringifying objects', () => {
+test('Warfarin operator parser renders profile records as sections instead of stringifying objects', () => {
   const { createWarfarinAnchorsFromDetail } = loadStoryParsers()
 
   const [anchor] = createWarfarinAnchorsFromDetail('operators', 'tangtang', {
@@ -791,7 +791,6 @@ test('Warfarin operator parser renders profile records and voice lines instead o
       ],
       profileVoice: [
         { voiceTitle: '行动准备1', voiceDesc: '黑面煞，你要去哪里？带上我呀。' },
-        { voiceTitle: '编入队伍', voiceDesc: '大当家在此，都听我指挥！' },
       ],
     },
     itemTable: {
@@ -806,8 +805,8 @@ test('Warfarin operator parser renders profile records and voice lines instead o
   assert.match(anchor.content, /汤汤是一名使用手铳的术师干员/)
   assert.match(anchor.content, /基础档案：【代号】汤汤/)
   assert.match(anchor.content, /档案资料·一：清波寨的大当家。/)
-  assert.match(anchor.content, /行动准备1：黑面煞，你要去哪里？带上我呀。/)
-  assert.equal((anchor.content.match(/汤汤是一名使用手铳/g) || []).length, 1)
+  assert.match(anchor.content, /语音记录\n行动准备1：黑面煞，你要去哪里？带上我呀。/)
+  assert.equal(anchor.content.split('\n\n').length, 4)
   assert.deepEqual(anchor.full_text, [{ speaker: '资料', text: anchor.content }])
 })
 

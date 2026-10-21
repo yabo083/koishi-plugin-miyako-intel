@@ -3,7 +3,7 @@ import { ScopedLogger } from '../core/logger'
 import { sanitizeForwardError } from '../core/errors'
 import { Config as RuntimeConfig } from '../types'
 import { WikiReplyPayload } from './fold'
-import { batchOneBotForwardNodes, buildOneBotForwardNodes, sendOneBotForwardNodesWithRetry } from './onebot-forward'
+import { batchOneBotForwardNodes, buildOneBotForwardNodes, canSendSingleCardForward, sendOneBotForwardNodesWithRetry } from './onebot-forward'
 import { splitWikiMessage } from './message-split'
 
 type WikiConfig = RuntimeConfig['wiki']
@@ -31,7 +31,8 @@ export function createWikiReplySender(wikiConfig: WikiConfig, logger: ScopedLogg
     if (!messages.length) return Array.isArray(payload) ? undefined : payload || undefined
     const pending: string[] = []
     if (shouldSendForward(session, wikiConfig)) {
-      const batches = batchOneBotForwardNodes(buildOneBotForwardNodes(messages, wikiConfig))
+      const nodes = buildOneBotForwardNodes(messages, wikiConfig)
+      const batches = !nodes.length ? [] : canSendSingleCardForward(session) ? [nodes] : batchOneBotForwardNodes(nodes)
       let forwardOk = batches.length > 0
       for (const batch of batches) {
         if (!forwardOk) {

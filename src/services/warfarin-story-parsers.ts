@@ -155,24 +155,27 @@ function createRichContentAnchors(slug: string, data: any, scope: string, label:
 }
 
 // characterTable.profileRecord / profileVoice 都是对象数组（档案分卷、语音条目），
-// 直接丢进字符串会得到 "[object Object]"，必须按各自字段拼成可读行。
+// 直接丢进字符串会得到 "[object Object]"。按分卷/语音各自拼行，并用空行分节，
+// 转发时才能按源站章节切节点。
 function createOperatorAnchors(slug: string, data: any): StoryAnchor[] {
   const character = data?.characterTable || {}
-  const texts = extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc')
+  const sections: string[] = []
+  const intro = extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc')
+  if (intro.length) sections.push(intro.join('\n'))
   for (const record of objectList(character.profileRecord)) {
     const title = stripTags(record.recordTitle)
     const text = stripTags(record.recordDesc)
     if (!text) continue
-    texts.push(title ? `${title}：${text}` : text)
+    sections.push(title ? `${title}：${text}` : text)
   }
-  for (const voice of objectList(character.profileVoice)) {
+  const voices = objectList(character.profileVoice).map((voice) => {
     const title = stripTags(voice.voiceTitle)
     const text = stripTags(voice.voiceDesc)
-    if (!text) continue
-    texts.push(title ? `${title}：${text}` : text)
-  }
+    return text ? (title ? `${title}：${text}` : text) : ''
+  }).filter(Boolean)
+  if (voices.length) sections.push(['语音记录', ...voices].join('\n'))
   const name = stripTags(data?.itemTable?.name || character.name || '') || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n'), `干员资料：${name}`, 'operators')]
+  return [makeStoryAnchor(slug, 0, sections.join('\n\n'), `干员资料：${name}`, 'operators')]
 }
 
 function objectList(value: unknown): Array<Record<string, unknown>> {

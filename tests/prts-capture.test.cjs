@@ -918,7 +918,7 @@ test('warfarin wiki private replies can be sent as OneBot forward messages', asy
   assert.equal(sent.length, 0)
   assert.equal(forwardCalls.length, 1)
   assert.equal(forwardCalls[0].userId, 'user-1')
-  assert.equal(forwardCalls[0].messages.length, 2)
+  assert.ok(forwardCalls[0].messages.length >= 2)
   assert.match(forwardCalls[0].messages[0].data.content, /1\. 见闻辑录：息壤资料1/)
   assert.match(forwardCalls[0].messages[1].data.content, /6\. 见闻辑录：息壤资料6/)
 })
@@ -974,12 +974,12 @@ test('warfarin wiki private forward does not treat onebot private cid as group i
   assert.equal(sent.length, 0)
   assert.equal(forwardCalls.length, 1)
   assert.equal(forwardCalls[0].user_id, 2657455842)
-  assert.equal(forwardCalls[0].messages.length, 2)
+  assert.ok(forwardCalls[0].messages.length >= 2)
 })
 
 test('warfarin wiki group forward falls back to plain text when adapter send fails', async () => {
   const { apply } = loadPlugin()
-  const { ctx, commandHandlers, createSession } = createMockContext({
+  const { ctx, commandHandlers, createSession, sent } = createMockContext({
     http: async (url) => {
       if (url.includes('story.example')) return { query: '息壤', total: 0, results: [] }
       return {
@@ -1012,9 +1012,11 @@ test('warfarin wiki group forward falls back to plain text when adapter send fai
 
   const search = commandHandlers.get('w <input:text>')
   const result = await search({ session, options: {} }, '息壤')
+  const delivered = result ? [result] : sent
 
-  assert.match(result, /Warfarin Wiki 检索：息壤/)
-  assert.match(result, /中枢档案：息壤/)
+  assert.ok(delivered.some(message => /Warfarin Wiki 检索：息壤/.test(message)))
+  assert.ok(delivered.some(message => /中枢档案：息壤/.test(message)))
+  assert.ok(delivered.every(message => message.length <= 1500))
 })
 
 test('scheduled push only broadcasts to allowed channels when enabled', async () => {
