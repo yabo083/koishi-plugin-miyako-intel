@@ -91,14 +91,13 @@ export function registerWikiCommands(deps: WikiCommandsDeps) {
     if (!anchor) return '请先使用 w 关键词 检索，再用 w 编号 查看详情。'
     const actualSource = source || anchor.sourceKind || 'wiki'
     const asAnchorOnly = () => formatWikiContext({ anchor, full_text: [], summary: null, source_ref: anchor.source })
-    // 官方模式没有全文接口，直接用搜索结果里的摘要
-    if (actualSource === 'wiki' && wiki.mode === 'official') return asAnchorOnly()
     try {
-      return formatWikiContext(await search.fetchContext(anchor.anchor_id, actualSource))
+      return formatWikiContext(await search.fetchContext(anchor, actualSource))
     } catch (error) {
       const what = actualSource === 'story' ? '剧情/任务全文' : '终末地资料'
       logger.warn(`${what}上下文检索失败：${formatError(error)}`)
-      if (error instanceof WarfarinWikiApiError && error.code === 404) return asAnchorOnly()
+      // 官方详情拿不到时退回搜索摘要，条目本身仍然可读。
+      if (actualSource === 'wiki' || (error instanceof WarfarinWikiApiError && error.code === 404)) return asAnchorOnly()
       return formatWikiCommandError(error, '资料上下文暂时不可用，请稍后重试。')
     }
   }

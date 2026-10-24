@@ -6,6 +6,7 @@ const rootDir = path.resolve(__dirname, '..')
 const builtFile = path.join(rootDir, 'lib', 'services', 'warfarin-wiki.js')
 const builtFormatFile = path.join(rootDir, 'lib', 'wiki', 'format.js')
 const builtToolsFile = path.join(rootDir, 'lib', 'wiki', 'chatluna-tools.js')
+const builtSearchFile = path.join(rootDir, 'lib', 'wiki', 'search.js')
 
 function loadWiki() {
   delete require.cache[builtFile]
@@ -20,6 +21,11 @@ function loadFormat() {
 function loadChatLunaTools() {
   delete require.cache[builtToolsFile]
   return require(builtToolsFile)
+}
+
+function loadSearch() {
+  delete require.cache[builtSearchFile]
+  return require(builtSearchFile)
 }
 
 test('warfarin wiki client uses official search for accurate totals', async () => {
@@ -103,6 +109,32 @@ test('warfarin wiki client uses configured official language for api and page li
 
   assert.equal(calls[0].url, 'https://api.example/v1/en/search?q=xiran')
   assert.equal(result.results[0].url, 'https://warfarin.wiki/en/items/item_xiranite_powder')
+})
+
+test('warfarin wiki client fetches full detail and maps lore to the lorev2 path', async () => {
+  const { WarfarinWikiClient } = loadWiki()
+  const calls = []
+  const client = new WarfarinWikiClient({
+    baseUrl: 'https://api.example/v1/cn',
+    mode: 'official',
+    timeoutMs: 1000,
+    fetch: async (url, init) => {
+      calls.push({ url, init })
+      return jsonResponse({
+        meta: { slug: 'grand-vision', type: 'weapon' },
+        data: { weaponBasicTable: { weaponDesc: '许愿井的馈赠已至。' }, itemTable: { desc: '武器说明。' } },
+      })
+    },
+  })
+
+  const data = await client.detail({ type: 'weapons', slug: 'grand-vision' })
+  assert.equal(calls[0].url, 'https://api.example/v1/cn/weapons/grand-vision')
+  assert.equal(calls[0].init.method, 'GET')
+  assert.equal(data.weaponBasicTable.weaponDesc, '许愿井的馈赠已至。')
+  assert.equal(data.meta, undefined)
+
+  await client.detail({ type: 'lore', slug: 'text_v0d8_24' })
+  assert.equal(calls[1].url, 'https://api.example/v1/cn/lorev2/text_v0d8_24')
 })
 
 test('warfarin wiki client uses anchor deployment when configured', async () => {
@@ -262,6 +294,46 @@ test('formats non-dialog details with source page link', () => {
 
   assert.match(text, /名称：潜地虬兽 \\| 类型：敌人资料 \\| 来源：Warfarin Wiki/)
   assert.match(text, /详情：https:\/\/warfarin\.wiki\/cn\/enemies\/eny_0007_mimicw/)
+})
+
+test('wiki orchestrator expands official snippets with the full detail narrative', async () => {
+  const { WikiSearchOrchestrator } = loadSearch()
+  const calls = []
+  const orchestrator = new WikiSearchOrchestrator({
+    wikiClient: {
+      async detail(input) {
+        calls.push([input.type, input.slug])
+        return {
+          itemTable: { desc: '终末地干员用武器。', decoDesc: '终末地工业制造的优质武器。' },
+          weaponBasicTable: { weaponDesc: '好像一口井啊……\n帝江号发射成功。' },
+        }
+      },
+    },
+    storyClient: {},
+    storySearch: {},
+    wiki: { searchCacheTtlMs: 60000, searchCacheMaxEntries: 10 },
+    storyScopes: ['missions'],
+    logger: { warn() {} },
+  })
+
+  const result = await orchestrator.fetchContext({
+    anchor_id: 'grand-vision',
+    content: '终末地工业制造的优质武器……他开始胡乱猜测，',
+    source: '单手剑：宏愿（另有 1 个变体）',
+    scope: 'weapons',
+    relevance: 43,
+    url: 'https://warfarin.wiki/cn/weapons/grand-vision',
+  }, 'wiki')
+
+  assert.deepEqual(calls, [['weapons', 'grand-vision']])
+  assert.equal(result.source_ref, '单手剑：宏愿（另有 1 个变体）')
+  assert.match(result.anchor.content, /终末地工业制造的优质武器。\n\n好像一口井啊/)
+  assert.match(result.anchor.content, /帝江号发射成功。/)
+  assert.deepEqual(result.full_text, [])
+  assert.equal(result.anchor.url, 'https://warfarin.wiki/cn/weapons/grand-vision')
+
+  await orchestrator.fetchContext({ anchor_id: 'grand-vision', content: 'snippet', source: '单手剑：宏愿', scope: 'weapons', relevance: 43 }, 'wiki')
+  assert.equal(calls.length, 1, 'detail responses should be cached')
 })
 
 test('chatluna tool adapter exposes search and context tools', async () => {

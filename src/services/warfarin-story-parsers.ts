@@ -113,17 +113,15 @@ function createTutorialAnchors(slug: string, data: any): StoryAnchor[] {
     texts.push(...extractFromTable(page, 'title', 'content'))
   }
   const name = firstText(Object.values(data?.wikiTutorialPageTable || {}).map((page: any) => page?.title)) || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n'), `教程：${name}`, 'tutorials')]
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `教程：${name}`, 'tutorials', null)]
 }
 
 function createEnemyAnchors(slug: string, data: any): StoryAnchor[] {
   const display = data?.enemyTemplateDisplayInfoTable || {}
-  const texts = [...extractFromTable(display, 'name', 'description', 'nickname')]
-  for (const entry of Object.values(data?.enemyAbilityDescTable || {})) {
-    texts.push(...extractFromTable(entry, 'name', 'description'))
-  }
+  // 只收 overview 里的描述；enemyAbilityDescTable 属于技能表，与属性一起排除。
+  const texts = [...extractFromTable(display, 'description', 'nickname')]
   const name = stripTags(display?.name || '') || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n'), `敌人资料：${name}`, 'enemies')]
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `敌人资料：${name}`, 'enemies', null)]
 }
 
 function createMedalAnchors(slug: string, data: any): StoryAnchor[] {
@@ -141,7 +139,7 @@ function createMedalAnchors(slug: string, data: any): StoryAnchor[] {
     : undefined
   texts.push(...extractFromTable(group, 'groupName'))
   const name = stripTags(ach?.name || '') || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n'), `奖章信息：${name}`, 'medals')]
+  return [makeStoryAnchor(slug, 0, texts.join('\n'), `奖章信息：${name}`, 'medals', null)]
 }
 
 function createRichContentAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
@@ -151,7 +149,7 @@ function createRichContentAnchors(slug: string, data: any, scope: string, label:
   }
   texts.push(...extractFromTable(data?.prtsAllItem, 'desc'))
   const name = stripTags(data?.richContentTable?.title || data?.prtsDocument?.name || data?.prtsAllItem?.name || '') || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n\n'), `${label}：${name}`, scope)]
+  return [makeStoryAnchor(slug, 0, texts.join('\n\n'), `${label}：${name}`, scope, null)]
 }
 
 // characterTable.profileRecord / profileVoice 都是对象数组（档案分卷、语音条目），
@@ -175,7 +173,7 @@ function createOperatorAnchors(slug: string, data: any): StoryAnchor[] {
   }).filter(Boolean)
   if (voices.length) sections.push(['语音记录', ...voices].join('\n'))
   const name = stripTags(data?.itemTable?.name || character.name || '') || slug
-  return [makeStoryAnchor(slug, 0, sections.join('\n\n'), `干员资料：${name}`, 'operators')]
+  return [makeStoryAnchor(slug, 0, sections.join('\n\n'), `干员资料：${name}`, 'operators', null)]
 }
 
 function objectList(value: unknown): Array<Record<string, unknown>> {
@@ -186,12 +184,14 @@ function objectList(value: unknown): Array<Record<string, unknown>> {
 
 function createItemLikeAnchors(slug: string, data: any, scope: string, label: string): StoryAnchor[] {
   if (scope === 'items' && isAchievementItem(data?.itemTable)) return []
+  // 源站页面把物品说明放 overview、武器长文放 description；技能/属性表不进入正文。
   const texts = [
-    ...extractFromTable(data?.itemTable, 'name', 'desc', 'decoDesc'),
-    ...extractFromTable(data?.factoryBuildingTable, 'name', 'desc'),
+    ...extractFromTable(data?.itemTable, 'desc', 'decoDesc'),
+    ...extractFromTable(data?.weaponBasicTable, 'weaponDesc'),
+    ...extractFromTable(data?.factoryBuildingTable, 'desc'),
   ]
   const name = stripTags(data?.itemTable?.name || data?.factoryBuildingTable?.name || '') || slug
-  return [makeStoryAnchor(slug, 0, texts.join('\n'), `${label}：${name}`, scope)]
+  return [makeStoryAnchor(slug, 0, texts.join('\n\n'), `${label}：${name}`, scope, null)]
 }
 
 function isAchievementItem(item: any) {
@@ -204,8 +204,11 @@ function createGenericAnchors(slug: string, data: any, scope: string): StoryAnch
   return [makeStoryAnchor(slug, 0, texts.join('\n'), `资料：${slug}`, scope)]
 }
 
-function makeStoryAnchor(slug: string, index: number, content: string, source: string, scope: string, fullText?: WarfarinWikiContextResult['full_text']): StoryAnchor {
+// fullText 传 null 表示“没有对话行”：详情直接按 content 的段落渲染，
+// 避免给整篇档案/武器长文套一层“资料：”前缀。
+function makeStoryAnchor(slug: string, index: number, content: string, source: string, scope: string, fullText?: WarfarinWikiContextResult['full_text'] | null): StoryAnchor {
   const text = String(content || '').trim()
+  const rows = fullText === null ? [] : (fullText?.length ? fullText : (text ? [{ speaker: '资料', text }] : []))
   return {
     anchor_id: `${slug}_${index}`,
     content: text,
@@ -214,7 +217,7 @@ function makeStoryAnchor(slug: string, index: number, content: string, source: s
     scope,
     relevance: 1,
     url: `https://warfarin.wiki/cn/${pagePathForScope(scope)}/${encodeURIComponent(slug)}`,
-    full_text: fullText?.length ? fullText : (text ? [{ speaker: '资料', text }] : []),
+    full_text: rows,
   }
 }
 

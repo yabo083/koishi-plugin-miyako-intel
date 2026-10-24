@@ -29,7 +29,9 @@ function determineBuild({ manifest, seed, sourceUpdatedAt }) {
   if (String(manifest.language || language) !== language) return { needsBuild: true, reason: 'language-changed' }
   if (Number(manifest.parserVersion || 0) < seed.parserVersion) return { needsBuild: true, reason: 'parser-outdated' }
   if (Number(manifest.count || 0) < seed.count) return { needsBuild: true, reason: 'bundle-outdated' }
-  if (manifest.sourceUpdatedAt === sourceUpdatedAt) return { needsBuild: false, reason: 'source-unchanged' }
+  // 首页日期没变不等于没有变化：同日期内的新增/下架条目只有列表集合差能发现。
+  // 详情接口没有 ETag/Last-Modified，所以这里仍然放行，但 builder 只会拉 12 个分类列表并复用旧锚点。
+  if (manifest.sourceUpdatedAt === sourceUpdatedAt) return { needsBuild: true, reason: 'incremental-check' }
 
   if (delayHours && String(sourceUpdatedAt) > String(manifest.sourceUpdatedAt || '')) {
     const sourceMs = Date.parse(`${sourceUpdatedAt}T00:00:00.000Z`)

@@ -45,6 +45,11 @@ export interface WarfarinWikiContextInput {
   contextRange?: number
 }
 
+export interface WarfarinWikiDetailInput {
+  type: string
+  slug: string
+}
+
 interface ApiEnvelope<T> {
   code: number
   message: string
@@ -126,6 +131,24 @@ export class WarfarinWikiClient {
     }, true)
   }
 
+  /**
+   * 官方详情接口：返回页面渲染所用的原始数据表（itemTable / weaponBasicTable / characterTable…）。
+   * 搜索结果的 snippet 只有约 300 字，详情页正文必须从这里取。
+   */
+  async detail(input: WarfarinWikiDetailInput): Promise<Record<string, unknown>> {
+    const type = String(input.type || '').trim()
+    const slug = String(input.slug || '').trim()
+    if (!type || !slug) throw new WarfarinWikiApiError(400, 'type and slug are required')
+    const payload = await this.requestJson<Record<string, unknown>>(
+      `${officialApiBaseUrl(this.baseUrl, this.language)}/${encodeURIComponent(apiDetailType(type))}/${encodeURIComponent(slug)}`,
+      { method: 'GET', headers: this.requestHeaders() },
+      false,
+      Math.max(this.timeoutMs, 20000),
+    )
+    const data = payload?.data
+    return data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : payload
+  }
+
   async context(input: WarfarinWikiContextInput): Promise<WarfarinWikiContextResult> {
     const anchorId = String(input.anchorId || '').trim()
     if (!anchorId) throw new WarfarinWikiApiError(400, 'anchor_id is required')
@@ -143,11 +166,11 @@ export class WarfarinWikiClient {
     }, true)
   }
 
-  private async requestJson<T>(url: string, init: Record<string, any>, envelope = false): Promise<T> {
+  private async requestJson<T>(url: string, init: Record<string, any>, envelope = false, timeoutMs = this.timeoutMs): Promise<T> {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined
-    const timer = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined
     try {
-      const response = await this.fetchImpl(url, { ...init, signal: controller?.signal })
+      const response = await this.fetchImpl(url, { ...init, signal: controller?.signal, timeout: timeoutMs })
       if (!envelope) return readJson<T>(response)
       const payload = await readJson<ApiEnvelope<T>>(response)
       if (payload.code !== 0 || !payload.data) throw new WarfarinWikiApiError(payload.code, payload.message || 'warfarin wiki api error')
@@ -224,6 +247,12 @@ function officialApiRootUrl(baseUrl: string) {
   const segments = baseUrl.split('/')
   if (looksLikeLanguageCode(segments.at(-1))) segments.pop()
   return segments.join('/')
+}
+
+/** 搜索结果的 type 与详情路径不完全一致：档案在搜索里是 lore，详情接口是 lorev2 */
+function apiDetailType(type: string) {
+  const normalized = String(type || '').trim().toLowerCase()
+  return normalized === 'lore' ? 'lorev2' : normalized
 }
 
 function officialPageUrl(baseUrl: string, language: string, type: string, slug: string) {

@@ -2,8 +2,9 @@
 import { ScopedLogger } from '../core/logger'
 import { formatError } from '../core/errors'
 import { Config as RuntimeConfig } from '../types'
-import { WarfarinWikiClient } from '../services/warfarin-wiki'
+import { WarfarinWikiApiError, WarfarinWikiClient, WarfarinWikiContextResult } from '../services/warfarin-wiki'
 import { WarfarinStorySearchService } from '../services/warfarin-story-search'
+import { createWarfarinAnchorsFromDetail } from '../services/warfarin-story-parsers'
 import {
   SelectedWikiAnchor, WikiSearchResult, WikiSearchSource,
   dedupeWikiResults, emptyWikiSearchResult, foldCrossSourceDuplicates, tagWikiSearchResult,
@@ -28,6 +29,7 @@ export class WikiSearchOrchestrator {
     wiki: new Map(),
     story: new Map(),
   }
+  private readonly detailCache = new Map<string, { expiresAt: number; result: WarfarinWikiContextResult }>()
 
   constructor(private readonly deps: WikiSearchDeps) {}
 
@@ -91,9 +93,41 @@ export class WikiSearchOrchestrator {
     return this.deps.storyClient.search({ keyword })
   }
 
-  async fetchContext(anchorId: string, source: WikiSearchSource) {
-    if (source === 'story') return this.fetchStoryContext(anchorId)
-    return this.deps.wikiClient.context({ anchorId, needSummary: false, contextRange: 3 })
+  async fetchContext(anchor: SelectedWikiAnchor, source: WikiSearchSource) {
+    if (source === 'story') return this.fetchStoryContext(anchor.anchor_id)
+    return this.fetchOfficialContext(anchor)
+  }
+
+  /**
+   * 官方搜索的 snippet 只有约 300 字，`w 序号` 必须回源详情接口取完整正文。
+   * 复用与构建期剧情包相同的解析器：只收 overview / description / 档案 / 对话等叙事字段，
+   * 属性表与技能表不进入正文。
+   */
+  private async fetchOfficialContext(anchor: SelectedWikiAnchor): Promise<WarfarinWikiContextResult> {
+    const { wiki, wikiClient } = this.deps
+    const scope = String(anchor.scope || '').trim()
+    if (!scope) throw new WarfarinWikiApiError(400, `missing scope for ${anchor.anchor_id}`)
+    const cacheKey = `${scope}:${anchor.anchor_id}`
+    const now = Date.now()
+    if (wiki.searchCacheTtlMs > 0) {
+      const cached = this.detailCache.get(cacheKey)
+      if (cached && cached.expiresAt > now) return cached.result
+      if (cached) this.detailCache.delete(cacheKey)
+    }
+    const data = await wikiClient.detail({ type: scope, slug: anchor.anchor_id })
+    const parsed = createWarfarinAnchorsFromDetail(scope, anchor.anchor_id, data)[0]
+    if (!parsed?.content) throw new WarfarinWikiApiError(404, `${scope}/${anchor.anchor_id} 没有可展示的正文`)
+    const result: WarfarinWikiContextResult = {
+      anchor: { ...anchor, content: parsed.content, url: anchor.url || parsed.url },
+      full_text: parsed.full_text,
+      summary: null,
+      source_ref: anchor.source,
+    }
+    if (wiki.searchCacheTtlMs > 0) {
+      this.detailCache.set(cacheKey, { expiresAt: now + wiki.searchCacheTtlMs, result })
+      this.pruneDetailCache()
+    }
+    return result
   }
 
   private async fetchStoryContext(anchorId: string) {
@@ -108,6 +142,20 @@ export class WikiSearchOrchestrator {
   async storyDataUpdatedLabel() {
     if (!this.deps.wiki.storySearchEnabled) return ''
     return this.deps.storySearch.getDataUpdatedLabel().catch(() => '')
+  }
+
+  private pruneDetailCache() {
+    const now = Date.now()
+    for (const [key, value] of this.detailCache) {
+      if (value.expiresAt < now) this.detailCache.delete(key)
+    }
+    // 详情正文比搜索片段大得多，缓存上限压到 50 条，避免长期占内存。
+    const limit = Math.min(50, Math.max(1, this.deps.wiki.searchCacheMaxEntries))
+    while (this.detailCache.size > limit) {
+      const oldest = this.detailCache.keys().next().value
+      if (!oldest) break
+      this.detailCache.delete(oldest)
+    }
   }
 
   private pruneCache(cache: Map<string, CacheEntry>) {

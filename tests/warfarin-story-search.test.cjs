@@ -555,7 +555,7 @@ test('story bundle workflow sets friendly pacing defaults', () => {
   assert.match(workflow, /STORY_CATEGORIES:/)
 })
 
-test('story bundle preflight skips dependency installation when source is unchanged', () => {
+test('story bundle preflight triggers an incremental check when source is unchanged', () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-preflight-'))
   const outputFile = path.join(baseDir, 'github-output')
   const mockFile = path.join(baseDir, 'mock-fetch.mjs')
@@ -578,9 +578,9 @@ test('story bundle preflight skips dependency installation when source is unchan
   })
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
-  assert.match(result.stdout, /"needsBuild": false/)
-  assert.match(result.stdout, /"reason": "source-unchanged"/)
-  assert.match(fs.readFileSync(outputFile, 'utf8'), /needs_build=false/)
+  assert.match(result.stdout, /"needsBuild": true/)
+  assert.match(result.stdout, /"reason": "incremental-check"/)
+  assert.match(fs.readFileSync(outputFile, 'utf8'), /needs_build=true/)
 })
 
 test('story bundle preflight rebuilds an unchanged source for an outdated parser', () => {
@@ -742,7 +742,8 @@ test('Warfarin detail parser builds searchable anchors for non-mission text', ()
   assert.deepEqual(baker[0].full_text.at(-1), { speaker: '选项', text: '某种创意食谱？ | 另一种料理？' })
 
   assert.equal(enemy[0].source, '敌人资料：潜地虬兽')
-  assert.match(enemy[0].content, /腐蚀金属/)
+  assert.match(enemy[0].content, /能够喷吐强腐蚀性液体的野兽/)
+  assert.doesNotMatch(enemy[0].content, /腐蚀金属/, 'enemy ability tables stay out of the narrative body')
   assert.equal(medal[0].source, '奖章信息：高阶培养奖章')
   assert.match(medal[0].content, /协议空间·高阶培养/)
   assert.match(medal[0].content, /主线任务奖章/)
@@ -807,7 +808,26 @@ test('Warfarin operator parser renders profile records as sections instead of st
   assert.match(anchor.content, /档案资料·一：清波寨的大当家。/)
   assert.match(anchor.content, /语音记录\n行动准备1：黑面煞，你要去哪里？带上我呀。/)
   assert.equal(anchor.content.split('\n\n').length, 4)
-  assert.deepEqual(anchor.full_text, [{ speaker: '资料', text: anchor.content }])
+  assert.deepEqual(anchor.full_text, [])
+})
+
+test('Warfarin weapon parser keeps the full weapon story and skips skill tables', () => {
+  const { createWarfarinAnchorsFromDetail } = loadStoryParsers()
+
+  const [anchor] = createWarfarinAnchorsFromDetail('weapons', 'grand-vision', {
+    itemTable: { name: '宏愿', desc: '终末地干员用武器，装备之后可以显著提升干员的作战能力。', decoDesc: '终末地工业制造的优质武器。' },
+    weaponBasicTable: {
+      weaponDesc: '好像一口井啊……\n他将手肘搭在观景台的栏杆上。\n帝江号发射成功。',
+      weaponSkillList: [{ description: '技能描述不应进入正文' }],
+    },
+  })
+
+  assert.equal(anchor.source, '武器资料：宏愿')
+  assert.match(anchor.content, /终末地干员用武器/)
+  assert.match(anchor.content, /终末地工业制造的优质武器。\n\n好像一口井啊/)
+  assert.match(anchor.content, /帝江号发射成功。/)
+  assert.doesNotMatch(anchor.content, /技能描述/)
+  assert.deepEqual(anchor.full_text, [])
 })
 
 test('Warfarin item parser skips achievement item shells in favor of medal anchors', () => {
@@ -1013,6 +1033,7 @@ test('story bundle builder reuses the previous anchors when a detail fetch fails
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miyako-story-builder-reuse-'))
   const outDir = path.join(baseDir, 'out')
   const mockFile = path.join(baseDir, 'mock-fetch.mjs')
+  const builderVersion = Number(/const parserVersion = (\d+)/.exec(fs.readFileSync(path.join(rootDir, 'scripts', 'build-warfarin-story-bundle.mjs'), 'utf8'))[1])
   fs.writeFileSync(mockFile, `
     import { gzipSync } from 'node:zlib'
     import { createHash } from 'node:crypto'
@@ -1028,7 +1049,7 @@ test('story bundle builder reuses the previous anchors when a detail fetch fails
     globalThis.fetch = async (url) => {
       const value = String(url)
       if (value === 'https://warfarin.wiki/cn') return response('<html><body>最后更新：2026-05-14</body></html>')
-      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: 6, sourceUpdatedAt: '2026-05-14', count: 1, sha256, url: 'https://example.test/previous.json.gz' })
+      if (value.endsWith('.manifest.json')) return response({ language: 'cn', parserVersion: ${builderVersion}, sourceUpdatedAt: '2026-05-14', count: 1, sha256, url: 'https://example.test/previous.json.gz' })
       if (value === 'https://example.test/previous.json.gz') return response(null)
       if (value === 'https://api.warfarin.wiki/v1/cn/missions') return response({ data: [{ slug: 'c27m5' }, { slug: 'c27m6' }] })
       if (value.endsWith('/missions/c27m5')) throw new Error('source flake')

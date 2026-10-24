@@ -9,7 +9,8 @@ export function createKoishiHttpFetch(http: any, timeoutMs: number) {
       method: init.method,
       headers: init.headers,
       responseType: init.responseType,
-      timeout: timeoutMs,
+      // 单次请求可按需放宽（详情接口比搜索大得多）
+      timeout: init.timeout ?? timeoutMs,
       signal: init.signal,
       validateStatus: () => true,
     }

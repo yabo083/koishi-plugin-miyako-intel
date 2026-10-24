@@ -192,7 +192,7 @@ test('background cron jobs are polled with a fixed one-minute interval', () => {
   assert.deepEqual(mock.intervals.map((item) => item.ms), [60 * 1000])
 })
 
-test('warfarin wiki w command searches official source, pages, and fetches context', async () => {
+test('warfarin wiki w command searches official source, pages, and fetches detail', async () => {
   const { apply } = loadPlugin()
   const requests = []
   const { ctx, commandHandlers, createSession, sent } = createMockContext({
@@ -200,6 +200,9 @@ test('warfarin wiki w command searches official source, pages, and fetches conte
       requests.push({ url, body: init.data })
       if (url.includes('story.example')) {
         return { query: '息壤', total: 0, results: [] }
+      }
+      if (url.includes('/lorev2/text_6')) {
+        return { data: { richContentTable: { contentList: [{ content: '第 6 条息壤相关资料。' }] }, prtsAllItem: { desc: '' } } }
       }
       if (url.includes('/search?q=')) {
         return {
@@ -214,19 +217,7 @@ test('warfarin wiki w command searches official source, pages, and fetches conte
           })),
         }
       }
-      return {
-        code: 0,
-        message: 'ok',
-        data: {
-          anchor: { anchor_id: 'text_6_0', content: '第 6 条息壤相关资料。', source: '见闻辑录：息壤资料6', scope: 'lore', relevance: 5 },
-          full_text: [
-            { speaker: '佩丽卡', text: '那是什么？' },
-            { speaker: '', text: '第 6 条息壤相关资料。' },
-          ],
-          summary: null,
-          source_ref: '见闻辑录：息壤资料6',
-        },
-      }
+      throw new Error(`unexpected fetch: ${url}`)
     },
   })
 
@@ -266,8 +257,11 @@ test('warfarin wiki w command searches official source, pages, and fetches conte
   assert.match(contextText, /名称：息壤资料6 \| 类型：见闻辑录 \| 来源：Warfarin Wiki/)
   assert.match(contextText, /第 6 条息壤相关资料。/)
   assert.equal(sent.length, 0)
-  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
-  assert.equal(requests.length, 2)
+  const wikiRequests = requests.filter((item) => item.url.startsWith('https://api.warfarin.wiki/v1'))
+  assert.equal(wikiRequests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
+  assert.equal(wikiRequests[1].url, 'https://api.warfarin.wiki/v1/cn/lorev2/text_6')
+  assert.equal(wikiRequests.length, 2)
+  assert.equal(requests.length, 3)
 })
 
 test('warfarin wiki search sends default 25-result batch windows', async () => {
@@ -500,12 +494,15 @@ test('warfarin wiki wn command force-searches numeric keywords without changing 
   assert.equal(requests.some((url) => String(url).includes('q=321')), true)
 })
 
-test('warfarin wiki official detail uses local snippet without context request', async () => {
+test('warfarin wiki official detail fetches the full narrative from the detail endpoint', async () => {
   const { apply } = loadPlugin()
   const requests = []
   const { ctx, commandHandlers, createSession } = createMockContext({
     http: async (url, init) => {
       requests.push({ url, body: init.data })
+      if (String(url).endsWith('/lorev2/text_v0d8_24')) {
+        return { data: { richContentTable: { contentList: [{ content: '息壤是一种用于遏制侵蚀的新材料。完整档案正文。' }] }, prtsAllItem: { desc: '' } } }
+      }
       return {
         query: '息壤',
         results: [
@@ -531,11 +528,13 @@ test('warfarin wiki official detail uses local snippet without context request',
   await search({ session, options: {} }, '息壤')
   const detail = await search({ session, options: {} }, '1')
 
-  assert.equal(requests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
-  assert.equal(requests[0].body, undefined)
-  assert.equal(requests.filter((item) => item.url.startsWith('https://api.warfarin.wiki/v1')).length, 1)
+  const wikiRequests = requests.filter((item) => item.url.startsWith('https://api.warfarin.wiki/v1'))
+  assert.equal(wikiRequests[0].url, 'https://api.warfarin.wiki/v1/cn/search?q=%E6%81%AF%E5%A3%A4')
+  assert.equal(wikiRequests[0].body, undefined)
+  assert.equal(wikiRequests[1].url, 'https://api.warfarin.wiki/v1/cn/lorev2/text_v0d8_24')
   assert.equal(requests.some((item) => item.url.endsWith('/search/context')), false)
   assert.match(detail, /名称：息壤 \| 类型：中枢档案 \| 来源：Warfarin Wiki/)
+  assert.match(detail, /完整档案正文/)
   assert.match(detail, /https:\/\/warfarin\.wiki\/cn\/lore\/text_v0d8_24/)
 })
 
@@ -545,6 +544,9 @@ test('warfarin wiki caches repeated keyword searches and supports keyword number
   const { ctx, commandHandlers, createSession } = createMockContext({
     http: async (url, init) => {
       requests.push({ url, body: init.data })
+      if (String(url).endsWith('/items/item_xiranite_powder')) {
+        return { data: { itemTable: { desc: '把源石与巨兽力量结合于一处后诞生出的新型源石材料。', decoDesc: '由宏科院研制。' } } }
+      }
       return {
         query: '息壤',
         results: [
@@ -572,9 +574,12 @@ test('warfarin wiki caches repeated keyword searches and supports keyword number
   await search({ session: sessionB, options: {} }, '息壤')
   const shortcut = await search({ session: sessionB, options: {} }, '息壤 2')
 
-  assert.equal(requests.length, 2)
+  // 两次同关键词搜索命中缓存；唯一新增请求是 `w 息壤 2` 触发的详情回源。
+  assert.equal(requests.length, 3)
+  assert.equal(requests[2].url, 'https://api.warfarin.wiki/v1/cn/items/item_xiranite_powder')
   assert.match(shortcut, /名称：息壤 \| 类型：材料 \| 来源：Warfarin Wiki/)
   assert.match(shortcut, /新型源石材料/)
+  assert.match(shortcut, /由宏科院研制。/)
   assert.match(shortcut, /https:\/\/warfarin\.wiki\/cn\/items\/item_xiranite_powder/)
 })
 
