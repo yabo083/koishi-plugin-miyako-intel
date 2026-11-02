@@ -101,11 +101,13 @@ for (const category of categories) {
   if (!slugs.length) emptyCategories.push(category)
   log(`Warfarin story bundle category start: ${category} slugs=${slugs.length} mode=${incremental ? 'incremental' : 'full'}`)
   const categoryStats = { done: 0, failed: 0, skipped: 0, refreshed: 0, reused: 0, reusedEntries: 0, newEntries: 0, lastLogAt: Date.now() }
-  const results = await mapWithConcurrency(slugs, concurrency, async (slug) => {
+  const results = await mapWithConcurrency(slugs, concurrency, async (slug, _index, pace) => {
     const sourceKey = `${scope}/${slug}`
     const previous = reusePreviousEntry(incremental, sourceKey, previousByKey)
     if (previous) return { reused: true, skipped: true, anchors: previous.anchors }
     try {
+      // 限速只落在真正发出去的详情请求上：增量轮命中的条目直接复用，不该在这里空睡。
+      await pace()
       const data = await fetchDetail(language, category, slug)
       const rawSha256 = hashJson(data)
       const previousDetail = previousByKey.get(sourceKey)
@@ -415,16 +417,20 @@ function isBundleAnchor(anchor) {
 async function mapWithConcurrency(items, limit, worker, spacingMs, onResult) {
   const results = new Array(items.length)
   let next = 0
-  let lastStart = 0
   async function run() {
-    while (next < items.length) {
-      const index = next++
+    let lastStart = 0
+    // 每个 worker 各自节流，只有真正要发请求时才调用 pace()：增量轮里命中复用的条目
+    // 原来也要按条目睡满 spacingMs（5367 条空转轮白烧 612s），现在直接放行。
+    const pace = async () => {
       if (spacingMs && lastStart) {
         const wait = Math.max(0, spacingMs - (Date.now() - lastStart))
         if (wait) await sleep(wait)
       }
       lastStart = Date.now()
-      results[index] = await worker(items[index], index)
+    }
+    while (next < items.length) {
+      const index = next++
+      results[index] = await worker(items[index], index, pace)
       onResult?.(results[index], index, items[index])
     }
   }
