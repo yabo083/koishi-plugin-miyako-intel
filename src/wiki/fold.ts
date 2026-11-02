@@ -3,6 +3,7 @@ import { WarfarinWikiAnchor } from '../services/warfarin-wiki'
 
 export type WikiSearchSource = 'wiki' | 'story'
 export type SelectedWikiAnchor = WarfarinWikiAnchor & { sourceKind?: WikiSearchSource }
+
 export type WikiReplyPayload = string | string[]
 
 export interface WikiSearchResult<T = WarfarinWikiAnchor> {
@@ -22,12 +23,12 @@ export function emptyWikiSearchResult(): WikiSearchResult<SelectedWikiAnchor> {
   return { results: [], total: 0, took_ms: 0 }
 }
 
-/** 同一来源里 anchor_id 重复的直接丢掉 */
+/** 同一来源里 anchor_id+scope 重复的直接丢掉（同一 anchor_id 可跨 scope 复用，如 items/gear） */
 export function dedupeWikiResults(results: SelectedWikiAnchor[]) {
   const seen = new Set<string>()
   const unique: SelectedWikiAnchor[] = []
   for (const item of results) {
-    const key = `${item.sourceKind || 'wiki'}:${item.anchor_id}`
+    const key = `${item.sourceKind || 'wiki'}:${item.scope || ''}:${item.anchor_id}`
     if (seen.has(key)) continue
     seen.add(key)
     unique.push(item)

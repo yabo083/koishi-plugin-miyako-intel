@@ -78,6 +78,38 @@
         <div v-if="storyUpdateMessage" class="miyako-intel-nav__message">
           {{ storyUpdateMessage }}
         </div>
+        <button
+          type="button"
+          class="miyako-intel-nav__action"
+          :disabled="isPreviewingDigest"
+          @click="previewWikiDigest"
+          @mousedown.stop
+          @touchstart.stop
+        >
+          {{ isPreviewingDigest ? '生成中...' : '预览热点检索词条' }}
+        </button>
+        <div
+          v-if="digestPreviewText"
+          class="miyako-intel-nav__message miyako-intel-nav__scrollable"
+        >
+          {{ digestPreviewText }}
+        </div>
+        <button
+          type="button"
+          class="miyako-intel-nav__action"
+          :disabled="isRunningDigest"
+          @click="runWikiDigest"
+          @mousedown.stop
+          @touchstart.stop
+        >
+          {{ isRunningDigest ? '执行中...' : '立即执行热点检索词条周报' }}
+        </button>
+        <div
+          v-if="digestRunText"
+          class="miyako-intel-nav__message miyako-intel-nav__scrollable"
+        >
+          {{ digestRunText }}
+        </div>
       </div>
     </div>
   </div>
@@ -113,6 +145,10 @@ const isCollapsed = ref(false)
 const activeItem = ref('')
 const isUpdatingStory = ref(false)
 const storyUpdateMessage = ref('')
+const isPreviewingDigest = ref(false)
+const digestPreviewText = ref('')
+const isRunningDigest = ref(false)
+const digestRunText = ref('')
 
 const mouse = reactive({
   moving: false,
@@ -180,6 +216,32 @@ async function updateStoryBundle() {
     storyUpdateMessage.value = '拉取失败，请查看日志。'
   } finally {
     isUpdatingStory.value = false
+  }
+}
+
+async function previewWikiDigest() {
+  if (isPreviewingDigest.value) return
+  isPreviewingDigest.value = true
+  try {
+    const result = await send('miyako-intel/wiki-digest-preview') as { ok?: boolean; text?: string }
+    digestPreviewText.value = result?.text || '本周还没有可统计的检索词条。'
+  } catch {
+    digestPreviewText.value = '预览失败，请查看日志。'
+  } finally {
+    isPreviewingDigest.value = false
+  }
+}
+
+async function runWikiDigest() {
+  if (isRunningDigest.value) return
+  isRunningDigest.value = true
+  try {
+    const result = await send('miyako-intel/wiki-digest-run') as { ok?: boolean; text?: string }
+    digestRunText.value = result?.text || '没有可执行的热点词条周报。'
+  } catch {
+    digestRunText.value = '执行失败，请查看日志。'
+  } finally {
+    isRunningDigest.value = false
   }
 }
 
@@ -455,6 +517,13 @@ onUnmounted(() => {
   color: var(--k-text-light);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.miyako-intel-nav__scrollable {
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .miyako-intel-nav.is-collapsed {

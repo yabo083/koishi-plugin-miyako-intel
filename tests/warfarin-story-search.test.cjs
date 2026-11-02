@@ -66,7 +66,7 @@ test('built-in story search seeds initial local index without source requests', 
   assert.ok(service.size >= 200)
   assert.equal(search.total, 1)
   assert.equal(search.results[0].anchor_id, 'c27m5_0')
-  assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'seed.json')), true)
+  assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'store.ndjson')), true)
 })
 
 test('built-in story search replaces stale legacy local cache with bundled full-text seed', async () => {
@@ -99,7 +99,7 @@ test('built-in story search replaces stale legacy local cache with bundled full-
 
   assert.ok(service.size >= 2200)
   assert.equal(search.results.some((result) => result.source === 'Baker对话：独行之路'), true)
-  assert.equal(fs.existsSync(path.join(anchorsDir, 'seed.json')), true)
+  assert.equal(fs.existsSync(path.join(anchorsDir, 'store.ndjson')), true)
   assert.equal(fs.existsSync(path.join(anchorsDir, 'c27m5.json')), false)
 })
 
@@ -180,7 +180,9 @@ test('built-in story search updates from remote compressed story text bundle', a
   assert.equal(report.pending, 0)
   assert.equal(search.total, 1)
   assert.equal(context.source_ref, '任务剧情：共饮一江水')
-  assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'bundle.json')), true)
+  assert.equal(fs.existsSync(path.join(baseDir, 'story-cache', 'cn', 'anchors', 'store.ndjson')), true)
+  const written = JSON.parse(fs.readFileSync(path.join(baseDir, 'story-cache', 'cn', 'manifest.json'), 'utf8'))
+  assert.equal(written.storeFormat, 'ndjson')
 })
 
 test('built-in story search decodes raw ArrayBuffer bundle and manifest from Koishi http', async () => {
@@ -671,8 +673,10 @@ test('bundled seed regeneration stays aligned with runtime parser metadata', () 
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.deepEqual(JSON.parse(result.stdout).count, 2)
   const generated = fs.readFileSync(outFile, 'utf8')
-  assert.match(generated, /export const bundledStorySeedVersion = 4/)
-  assert.match(generated, /export const bundledStorySeedCount = 2/)
+  assert.match(generated, /export \{ bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion \} from "\.\/warfarin-story-seed-meta"/)
+  const generatedMeta = fs.readFileSync(path.join(baseDir, 'warfarin-story-seed-meta.ts'), 'utf8')
+  assert.match(generatedMeta, /export const bundledStorySeedVersion = 4/)
+  assert.match(generatedMeta, /export const bundledStorySeedCount = 2/)
 })
 
 test('story bundle builder does not reuse anchors from older parser versions', () => {
@@ -924,7 +928,9 @@ test('story search dedupes identical display entries from different internal ite
   const service = new WarfarinStorySearchService({ baseDir, dataDirectory: 'story-cache', language: 'cn', timeoutMs: 1000, fetch: async () => { throw new Error('dedupe test should not fetch') } })
   const search = await service.search({ keyword: '紫晶' })
 
-  assert.equal(search.total, 3)
+  // total 是折叠前的真实命中数；变体折叠只影响返回条目
+  assert.equal(search.total, 5)
+  assert.equal(search.results.length, 3)
   assert.equal(search.results[0].anchor_id, 'item_glass_bottle_0')
   assert.equal(search.results[0].source, '物品信息：紫晶质瓶（另有 2 个变体）')
   assert.equal(search.results[1].anchor_id, 'item_glass_bottle_enr_0')
@@ -1024,8 +1030,8 @@ test('story bundle update replaces bundle atomically and drops stale seed files'
   const report = await service.update()
   assert.equal(report.refreshed, 1)
   const files = fs.readdirSync(anchorsDir)
-  assert.deepEqual(files, ['bundle.json'])
-  const stored = JSON.parse(fs.readFileSync(path.join(anchorsDir, 'bundle.json'), 'utf8'))
+  assert.deepEqual(files, ['store.ndjson'])
+  const stored = fs.readFileSync(path.join(anchorsDir, 'store.ndjson'), 'utf8').trim().split('\n').map(JSON.parse)
   assert.equal(stored[0].anchor_id, 'new_0')
 })
 

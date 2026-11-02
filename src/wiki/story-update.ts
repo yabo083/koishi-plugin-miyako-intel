@@ -1,7 +1,7 @@
 // 剧情全文包的更新：启动时、定时、控制台手动三个入口共用一个串行执行器
 import { ScopedLogger } from '../core/logger'
 import { formatError } from '../core/errors'
-import { DailyCronGate } from '../core/scheduler'
+import { DailyClaim } from '../core/scheduler'
 import { Config as RuntimeConfig } from '../types'
 import { WarfarinStorySearchService } from '../services/warfarin-story-search'
 import { WikiSearchOrchestrator } from './search'
@@ -10,7 +10,7 @@ export interface StoryUpdateDeps {
   storySearch: WarfarinStorySearchService
   search: WikiSearchOrchestrator
   wiki: RuntimeConfig['wiki']
-  gate: DailyCronGate
+  gate: DailyClaim
   logger: ScopedLogger
 }
 
@@ -49,9 +49,9 @@ export function createStoryUpdater(deps: StoryUpdateDeps) {
     },
     async runDue() {
       if (!wiki.storySearchEnabled) return
-      const dayKey = gate.due('story-update', wiki.storyUpdateCron, '剧情文本更新')
+      const dayKey = await gate.claim('story-update')
       if (!dayKey) return
-      if (await run('定时更新')) gate.markDone('story-update', dayKey)
+      await run('定时更新')
     },
   }
 }

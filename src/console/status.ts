@@ -13,6 +13,10 @@ export interface ConsolePanelDeps {
   storySearch: WarfarinStorySearchService
   storyUpdater: StoryUpdater
   storyScopes: string[]
+  /** 所有群的热点检索词条预览文本 */
+  digestPreview?: () => Promise<string>
+  /** 立即执行一次热点词条周报（忽略 cron 与 6 天间隔），返回每群结果文本 */
+  digestRun?: () => Promise<string[]>
 }
 
 function formatSearchCacheStatus(ttlMs: number, entries: number, maxEntries: number) {
@@ -22,7 +26,7 @@ function formatSearchCacheStatus(ttlMs: number, entries: number, maxEntries: num
 }
 
 export function registerConsolePanel(deps: ConsolePanelDeps) {
-  const { ctx, config, search, storySearch, storyUpdater, storyScopes } = deps
+  const { ctx, config, search, storySearch, storyUpdater, storyScopes, digestPreview, digestRun } = deps
   const { wiki } = config
 
   /** 只看能不能连上，不关心响应内容 */
@@ -77,4 +81,9 @@ export function registerConsolePanel(deps: ConsolePanelDeps) {
   })
   ctx.console?.addListener?.('miyako-intel/status', buildStatus)
   ctx.console?.addListener?.('miyako-intel/update-story', updateStory)
+  ctx.console?.addListener?.('miyako-intel/wiki-digest-preview', async () => ({ ok: true, text: await digestPreview?.() || '' }))
+  ctx.console?.addListener?.('miyako-intel/wiki-digest-run', async () => {
+    const results = await digestRun?.() || []
+    return { ok: true, text: results.length ? results.join('\n') : '没有可执行的热点词条周报。' }
+  })
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-parsers.js'
 
@@ -36,9 +36,7 @@ const chunks = base64.match(/.{1,100}/g) || []
 const body = [
   'import { gunzipSync } from "node:zlib"',
   '',
-  'export const bundledStorySeedLanguage = "cn"',
-  `export const bundledStorySeedVersion = ${parserVersion}`,
-  `export const bundledStorySeedCount = ${anchors.length}`,
+  'export { bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion } from "./warfarin-story-seed-meta"',
   'const bundledStorySeedChunks = [',
   ...chunks.map(chunk => `  "${chunk}",`),
   ']',
@@ -49,7 +47,16 @@ const body = [
   '',
 ].join('\n')
 
+// 版本/条数单独成文件：运行期只引用这个小模块，base64 大块按需加载后即释放
+const meta = [
+  'export const bundledStorySeedLanguage = "cn"',
+  `export const bundledStorySeedVersion = ${parserVersion}`,
+  `export const bundledStorySeedCount = ${anchors.length}`,
+  '',
+].join('\n')
+
 writeFileSync(outFile, body)
+writeFileSync(join(dirname(outFile), 'warfarin-story-seed-meta.ts'), meta)
 console.log(JSON.stringify({ count: anchors.length, gzipBytes: Buffer.byteLength(base64, 'base64'), base64Length: base64.length }, null, 2))
 
 function normalizeScope(category) {

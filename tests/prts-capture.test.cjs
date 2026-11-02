@@ -29,29 +29,82 @@ function createCommandStub(name, commandHandlers) {
   }
 }
 
+/**
+ * 假 miyako-delivery：记录调度/广播/投递，日切水位按 slot+dayKey 去重。
+ * 可选 deliveryOptions：{ claim?: false, failBroadcast?: boolean, failAlbum?: boolean }
+ */
+function createFakeDelivery(options = {}) {
+  const schedules = []
+  const broadcasts = []
+  const delivers = []
+  const claimed = new Set()
+  const delivery = {
+    async gateDailySlot(slot, dayKey) {
+      if (options.claim === false) return false
+      const key = `${slot}@${dayKey}`
+      if (claimed.has(key)) return false
+      claimed.add(key)
+      return true
+    },
+    scheduleCron(expression, run, cronOptions = {}) {
+      schedules.push({ expression, run, options: cronOptions })
+      return () => undefined
+    },
+    async broadcast(items) {
+      broadcasts.push(items)
+      const outcomes = items.map((item) => (options.failBroadcast
+        ? { ok: false, target: item.target, error: { code: 'BOT_OFFLINE', message: 'offline' }, attempts: 1 }
+        : { ok: true, target: item.target, attempts: 1, messageId: 'fake-message' }))
+      return {
+        ok: outcomes.every((outcome) => outcome.ok),
+        deliveredCount: outcomes.filter((outcome) => outcome.ok).length,
+        totalCount: outcomes.length,
+        outcomes,
+      }
+    },
+    async deliver(item) {
+      delivers.push(item)
+      if (options.failAlbum && item.target && item.target.kind === 'album') {
+        return { ok: false, target: item.target, error: { code: 'ALBUM_UPLOAD_FAILED', message: 'album api down' }, attempts: 1 }
+      }
+      return { ok: true, target: item.target, attempts: 1, messageId: 'fake-message' }
+    },
+    async listAlbums(groupId) {
+      return (options.albums || []).filter((album) => String(album.groupId) === String(groupId))
+    },
+  }
+  return { delivery, schedules, broadcasts, delivers, claimed }
+}
+
+/** 取指定表达式注册的调度任务并运行；触发时机由 miyako-delivery 决定，测试直接调用 */
+async function runScheduled(mock, expression) {
+  const task = mock.schedules.find((item) => item.expression === expression)
+  assert.ok(task, `未找到表达式「${expression}」的调度`)
+  await task.run()
+}
+
 function createMockContext(options = {}) {
+  const deliveryMock = createFakeDelivery(options.deliveryOptions || {})
   const registeredCommands = []
   const commandHandlers = new Map()
   const intervals = []
   const middlewares = []
   const sent = []
-  const broadcastCalls = []
   const loggerLines = []
+  const eventHandlers = new Map()
 
   const ctx = {
+    'miyako-delivery': deliveryMock.delivery,
     baseDir: options.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'prts-plugin-')),
     puppeteer: options.puppeteer,
+    bots: options.bots || [],
+    schema: options.schema,
     command(name) {
       registeredCommands.push(name)
       return createCommandStub(name, commandHandlers)
     },
     inject() {
       return { constructor: { name: 'ForkScope' } }
-    },
-    async broadcast(channels, content, forced) {
-      broadcastCalls.push({ channels: [...channels], content, forced })
-      channels.splice(0)
-      return []
     },
     logger() {
       return {
@@ -70,7 +123,10 @@ function createMockContext(options = {}) {
       return () => undefined
     },
     http: options.http,
-    on() { return () => undefined },
+    on(event, handler) {
+      if (typeof handler === 'function') eventHandlers.set(event, [...(eventHandlers.get(event) || []), handler])
+      return () => undefined
+    },
   }
 
   function createSession() {
@@ -84,7 +140,10 @@ function createMockContext(options = {}) {
     }
   }
 
-  return { ctx, registeredCommands, commandHandlers, intervals, middlewares, sent, loggerLines, broadcastCalls, createSession }
+  return {
+    ctx, registeredCommands, commandHandlers, intervals, middlewares, sent, loggerLines, createSession, eventHandlers,
+    schedules: deliveryMock.schedules, broadcasts: deliveryMock.broadcasts, delivers: deliveryMock.delivers,
+  }
 }
 
 const defaultConfig = {
@@ -158,6 +217,9 @@ const defaultConfig = {
     pageSize: 5,
     initialPageCount: 5,
     selectionTtlMs: 300000,
+    // 老断言按完整字面文本核对：混淆与截断模式各有独立回归覆盖
+    obfuscateEnabled: false,
+    contextMode: 'full',
   },
   now: '2026-04-29T02:00:00.000+08:00',
 }
@@ -169,15 +231,7 @@ test('calculates PRTS cache day by 04:00 Asia/Shanghai boundary', () => {
   assert.equal(getPrtsDayKey(new Date('2026-04-28T20:00:00.000Z'), 'Asia/Shanghai', 4), '2026-04-29')
 })
 
-test('cron matcher supports annual schedules by matching current minute only', () => {
-  const { matchesCronExpression } = require(path.join(rootDir, 'lib', 'core', 'cron.js'))
-
-  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 0, hour: 0, day: 1, month: 1, weekday: 4 }), true)
-  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 1, hour: 0, day: 1, month: 1, weekday: 4 }), false)
-  assert.equal(matchesCronExpression('0 0 1 1 *', { minute: 0, hour: 0, day: 1, month: 2, weekday: 0 }), false)
-})
-
-test('background cron jobs are polled with a fixed one-minute interval', () => {
+test('cron 表达式与东八区时区一并交给 miyako-delivery 调度', () => {
   const { apply } = loadPlugin()
   const mock = createMockContext({ http: async () => ({ data: [] }) })
 
@@ -189,7 +243,12 @@ test('background cron jobs are polled with a fixed one-minute interval', () => {
     wiki: { ...defaultConfig.wiki, storySearchEnabled: true, storyUpdateCron: '0 0 1 1 *' },
   })
 
-  assert.deepEqual(mock.intervals.map((item) => item.ms), [60 * 1000])
+  assert.equal(mock.schedules.length, 4)
+  // 刷新、推送、剧情更新使用配置值；缓存维护沿用内置 archiveCron 常量
+  assert.deepEqual(mock.schedules.map((item) => item.expression), ['0 0 1 1 *', '0 0 1 1 *', '30 4 * * *', '0 0 1 1 *'])
+  for (const item of mock.schedules) assert.equal(item.options.timeZone, 'Asia/Shanghai')
+  // 插件不再自建每分钟轮询
+  assert.equal(mock.intervals.length, 0)
 })
 
 test('warfarin wiki w command searches official source, pages, and fetches detail', async () => {
@@ -248,7 +307,7 @@ test('warfarin wiki w command searches official source, pages, and fetches detai
   const contextText = await search({ session, options: {} }, '6')
 
   assert.match(searchText, /Warfarin Wiki 检索：息壤/)
-  assert.match(searchText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\] \| 输入 w 序号 查看，w\+ 下一页，w- 上一页，w\+页码 跳页。/)
+  assert.match(searchText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\] \| 输入 w 序号 查看，w\+ 下一页，w- 上一页，w\+页码 跳页，建议追加关键词缩小范围。/)
   assert.doesNotMatch(searchText, /息壤资料6/)
   assert.match(pageText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
   assert.match(repeatedNextText, /Warfarin Wiki 检索：息壤 \| 共 7 条，可用页码 \[1-2\]/)
@@ -264,7 +323,7 @@ test('warfarin wiki w command searches official source, pages, and fetches detai
   assert.equal(requests.length, 3)
 })
 
-test('warfarin wiki search sends default 25-result batch windows', async () => {
+test('warfarin wiki search sends one Top-K page and hints narrowing when total exceeds a page', async () => {
   const { apply } = loadPlugin()
   const { ctx, commandHandlers, createSession, sent } = createMockContext({
     http: async (url) => {
@@ -288,6 +347,7 @@ test('warfarin wiki search sends default 25-result batch windows', async () => {
     wiki: {
       ...defaultConfig.wiki,
       storySearchEnabled: false,
+      initialPageCount: 1,
     },
   })
 
@@ -297,24 +357,20 @@ test('warfarin wiki search sends default 25-result batch windows', async () => {
   const session = createSession()
 
   const searchResult = await search({ session, options: {} }, '息壤')
-  assert.equal(searchResult, undefined)
-  assert.equal(sent.length, 5)
-  assert.match(String(sent[0]), /1\. 见闻辑录：息壤资料1/)
-  assert.match(String(sent[4]), /25\. 见闻辑录：息壤资料25/)
+  assert.equal(sent.length, 0)
+  assert.match(String(searchResult), /1\. 见闻辑录：息壤资料1/)
+  assert.match(String(searchResult), /5\. 见闻辑录：息壤资料5/)
+  assert.doesNotMatch(String(searchResult), /息壤资料6/)
+  assert.match(String(searchResult), /建议追加关键词缩小范围/)
+  assert.doesNotMatch(String(searchResult), /https?:\/\//)
 
-  sent.length = 0
-  const nextResult = await next({ session })
-  assert.equal(nextResult, undefined)
-  assert.equal(sent.length, 5)
-  assert.match(String(sent[0]), /26\. 见闻辑录：息壤资料26/)
-  assert.match(String(sent[4]), /50\. 见闻辑录：息壤资料50/)
+  const nextText = await next({ session })
+  assert.match(String(nextText), /6\. 见闻辑录：息壤资料6/)
+  assert.match(String(nextText), /10\. 见闻辑录：息壤资料10/)
 
-  sent.length = 0
-  const previousResult = await previous({ session })
-  assert.equal(previousResult, undefined)
-  assert.equal(sent.length, 5)
-  assert.match(String(sent[0]), /1\. 见闻辑录：息壤资料1/)
-  assert.match(String(sent[4]), /25\. 见闻辑录：息壤资料25/)
+  const previousText = await previous({ session })
+  assert.match(String(previousText), /1\. 见闻辑录：息壤资料1/)
+  assert.doesNotMatch(String(previousText), /息壤资料6/)
 })
 
 test('warfarin wiki supports compact w+page jump input', async () => {
@@ -1024,11 +1080,388 @@ test('warfarin wiki group forward falls back to plain text when adapter send fai
   assert.ok(delivered.every(message => message.length <= 1500))
 })
 
-test('scheduled push only broadcasts to allowed channels when enabled', async () => {
+test('warfarin wiki w热点 preview is group-scoped and text-only', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, commandHandlers, createSession, registeredCommands } = createMockContext({
+    http: async (url) => {
+      if (String(url).includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      if (String(url).includes('/lorev2/')) return { data: { richContentTable: { contentList: [{ content: '息壤档案全文。' }] } } }
+      return { query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }
+    },
+  })
+
+  apply(ctx, { ...defaultConfig, wiki: { ...defaultConfig.wiki, storySearchEnabled: false } })
+  const search = commandHandlers.get('w <input:text>')
+  const digest = commandHandlers.get('w热点')
+
+  assert.equal(registeredCommands.includes('w热点'), true)
+  assert.equal(typeof digest, 'function')
+  const privateSession = createSession()
+  assert.equal(String(await digest({ session: privateSession, options: {} })), '请在群内使用。')
+
+  const session = createSession()
+  session.guildId = '10001'
+  for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+  const text = await digest({ session, options: {} })
+  assert.match(String(text), /本周群友热点检索词条为：/)
+  assert.match(String(text), /#1「息壤」 检索 3 次 · 索引：命中 1 条/)
+
+  // 点过详情后再看：词条行切到「详情」模式
+  await search({ session, options: {} }, '息壤')
+  await search({ session, options: {} }, '1')
+  const withViews = await digest({ session, options: {} })
+  assert.match(String(withViews), /#1「息壤」 检索 4 次 · 详情：中枢档案：息壤/)
+
+  // 私聊检索不入群统计
+  await search({ session: privateSession, options: {} }, '息壤')
+  const again = await digest({ session, options: {} })
+  assert.match(String(again), /#1「息壤」 检索 4 次/)
+})
+
+test('wiki digest job logs generate-only preview for groups without configured album', async () => {
+  const { apply } = loadPlugin()
+  const mock = createMockContext({
+    http: async (url) => {
+      if (String(url).includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return { query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }
+    },
+  })
+  const { ctx, commandHandlers, createSession, loggerLines } = mock
+
+  apply(ctx, {
+    ...defaultConfig,
+    now: '2026-04-27T09:00:00.000+08:00',
+    scheduledPush: { enabled: false, cron: '5 8 * * *', channels: ['onebot:10001'] },
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false, digestEnabled: true, digestCron: '0 9 * * 1' },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const digest = commandHandlers.get('w热点')
+  const session = createSession()
+  session.guildId = '10001'
+  for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+  await runScheduled(mock, '0 9 * * 1')
+
+  const digestLog = loggerLines.find(([level, message]) => level === 'info' && /热点词条周报/.test(message))
+  assert.ok(digestLog)
+  assert.match(digestLog[1], /未配置相册，仅生成/)
+  assert.match(digestLog[1], /本周群友热点检索词条为：/)
+  assert.match(digestLog[1], /息壤.*检索 3 次/)
+  assert.equal(mock.broadcasts.length, 0)
+  assert.equal(mock.delivers.length, 0)
+  // 只生成不发送：窗口不清空，人工预览仍能看到词条
+  const preview = await digest({ session, options: {} })
+  assert.match(String(preview), /息壤.*检索 3 次/)
+})
+
+test('wiki digest job hands one album delivery per configured group and notifies', async () => {
+  const { apply } = loadPlugin()
+  const notices = []
+  const wikiPage = async () => ({
+    async setViewport() {},
+    async setContent() {},
+    async evaluate() { return 900 },
+    async screenshot() { return Buffer.from('PNGDATA') },
+    async close() {},
+  })
+  const bot = {
+    platform: 'onebot',
+    selfId: 'bot-1',
+    internal: {
+      async _get(action) {
+        if (action === 'get_group_list') return [{ group_id: 10001, group_name: '测试群' }]
+        if (action === 'get_qun_album_list') return { album_list: [{ album_id: 'alb_9', name: 'Warfarin 资料' }] }
+        return { retcode: 0 }
+      },
+    },
+    async sendMessage(groupId, text) { notices.push({ groupId, text }) },
+  }
+  const mock = createMockContext({
+    bots: [bot],
+    puppeteer: { page: wikiPage },
+    deliveryOptions: { albums: [{ groupId: '10001', albumId: 'alb_9', albumName: 'Warfarin 资料' }] },
+    http: async (url) => {
+      if (String(url).includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      if (String(url).includes('/lorev2/')) return { data: { richContentTable: { contentList: [{ content: '息壤档案全文。' }] } } }
+      return { query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }
+    },
+  })
+  const { ctx, commandHandlers, createSession } = mock
+
+  apply(ctx, {
+    ...defaultConfig,
+    now: '2026-04-27T09:00:00.000+08:00',
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false, digestEnabled: true, digestCron: '0 9 * * 1', digestAlbums: ['10001/alb_9'] },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const digest = commandHandlers.get('w热点')
+  const session = createSession()
+  session.guildId = '10001'
+  for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+  await runScheduled(mock, '0 9 * * 1')
+
+  assert.equal(mock.delivers.length, 1)
+  const albumDelivery = mock.delivers[0]
+  assert.equal(albumDelivery.target.kind, 'album')
+  assert.equal(albumDelivery.target.channelId, 'onebot:10001')
+  assert.equal(albumDelivery.target.albumId, 'alb_9')
+  assert.equal(albumDelivery.elements.length, 1)
+  assert.equal(albumDelivery.elements[0].type, 'img')
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0].groupId, '10001')
+  assert.match(notices[0].text, /本周群友热点检索词条长图已存入群相册「Warfarin 资料」（1 条）/)
+  // 窗口已重置
+  const preview = await digest({ session, options: {} })
+  assert.match(String(preview), /没有达到 3 次检索的热点词条/)
+})
+
+test('wiki digest job skips below-threshold groups and never notifies on upload failure', async () => {
+  const { apply } = loadPlugin()
+  const notices = []
+  const wikiPage = async () => ({
+    async setViewport() {},
+    async goto() {},
+    async setContent() {},
+    async evaluate() { return 900 },
+    async screenshot() { return Buffer.from('PNGDATA') },
+    async close() {},
+  })
+  const bot = {
+    platform: 'onebot',
+    selfId: 'bot-1',
+    internal: {
+      async _get(action) {
+        if (action === 'get_group_list') return [{ group_id: 10001, group_name: '测试群' }]
+        if (action === 'get_qun_album_list') return { album_list: [{ album_id: 'alb_9', name: 'Warfarin 资料' }] }
+        return { retcode: 0 }
+      },
+    },
+    async sendMessage(groupId, text) { notices.push({ groupId, text }) },
+  }
+  const mock = createMockContext({
+    bots: [bot],
+    puppeteer: { page: wikiPage },
+    deliveryOptions: { failAlbum: true, albums: [{ groupId: '10001', albumId: 'alb_9', albumName: 'Warfarin 资料' }] },
+    http: async (url) => {
+      if (String(url).includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return { query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }
+    },
+  })
+  const { ctx, commandHandlers, createSession } = mock
+
+  apply(ctx, {
+    ...defaultConfig,
+    now: '2026-04-27T09:00:00.000+08:00',
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false, digestEnabled: true, digestCron: '0 9 * * 1', digestAlbums: ['10001/alb_9', '10002/alb_9'] },
+  })
+
+  const search = commandHandlers.get('w <input:text>')
+  const digest = commandHandlers.get('w热点')
+  const hot = createSession()
+  hot.guildId = '10001'
+  for (let i = 0; i < 3; i++) await search({ session: hot, options: {} }, '息壤')
+  const cold = createSession()
+  cold.guildId = '10002'
+  await search({ session: cold, options: {} }, '息壤')
+  await runScheduled(mock, '0 9 * * 1')
+
+  // 10001 达到阈值但上传失败；10002 未达阈值走 404 图，同样上传失败：都不通知、不重置
+  assert.equal(notices.length, 0)
+  assert.equal(mock.delivers.length, 2)
+  const preview = await digest({ session: hot, options: {} })
+  assert.match(String(preview), /息壤.*检索 3 次/)
+})
+
+test('album detection runs at most once per plugin lifetime', async () => {
+  const { apply } = loadPlugin()
+  const albumCalls = []
+  const bot = {
+    platform: 'onebot',
+    selfId: 'bot-1',
+    status: 1,
+    internal: {
+      async _get(action, params) {
+        if (action === 'get_qun_album_list') albumCalls.push(params.group_id)
+        if (action === 'get_qun_album_list') return { album_list: [], has_more: false }
+        return { retcode: 0 }
+      },
+    },
+    async sendMessage() {},
+  }
+  const { ctx, eventHandlers } = createMockContext({
+    bots: [bot],
+    schema: { set() {} },
+    http: async () => ({ results: [] }),
+  })
+  const config = {
+    ...defaultConfig,
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false },
+    scheduledPush: { enabled: false, channels: ['onebot:10001'], cron: '' },
+  }
+  const sleep = () => new Promise((resolve) => setTimeout(resolve, 60))
+
+  apply(ctx, config, { albumDetectDebounceMs: 1 })
+  await sleep()
+  // 启动即已在线：10s（测试里 1ms）防抖后跑一次
+  assert.equal(albumCalls.length, 1)
+
+  // 之后再多 login 事件也不再探测
+  const session = { bot }
+  for (const handler of eventHandlers.get('login-added') || []) await handler(session)
+  for (const handler of eventHandlers.get('login-updated') || []) await handler(session)
+  await sleep()
+  assert.equal(albumCalls.length, 1)
+})
+
+test('album detection waits for the first onebot login when no bot is online at startup', async () => {
+  const { apply } = loadPlugin()
+  const albumCalls = []
+  const bot = {
+    platform: 'onebot',
+    selfId: 'bot-1',
+    status: 0,
+    internal: {
+      async _get(action, params) {
+        if (action === 'get_qun_album_list') albumCalls.push(params.group_id)
+        if (action === 'get_qun_album_list') return { album_list: [], has_more: false }
+        return { retcode: 0 }
+      },
+    },
+    async sendMessage() {},
+  }
+  const { ctx, eventHandlers } = createMockContext({
+    bots: [bot],
+    schema: { set() {} },
+    http: async () => ({ results: [] }),
+  })
+  const config = {
+    ...defaultConfig,
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false },
+    scheduledPush: { enabled: false, channels: ['onebot:10001'], cron: '' },
+  }
+  const sleep = () => new Promise((resolve) => setTimeout(resolve, 60))
+
+  apply(ctx, config, { albumDetectDebounceMs: 1 })
+  await sleep()
+  // 启动时 bot 离线：不探测
+  assert.equal(albumCalls.length, 0)
+
+  // 首次上线事件触发一次，再来的事件忽略
+  bot.status = 1
+  const session = { bot }
+  for (const handler of eventHandlers.get('login-added') || []) await handler(session)
+  await sleep()
+  assert.equal(albumCalls.length, 1)
+  for (const handler of eventHandlers.get('login-updated') || []) await handler(session)
+  await sleep()
+  assert.equal(albumCalls.length, 1)
+})
+
+test('w热点图 renders this group digest as a single image, preview only', async () => {
+  const { apply } = loadPlugin()
+  const sentImages = []
+  const albumCalls = []
+  let shotIndex = 0
+  const wikiPage = async () => ({
+    async setViewport() {},
+    async setContent() {},
+    async evaluate() { return 2400 },
+    async screenshot() { return Buffer.from(`SLICE-${++shotIndex}`) },
+    async close() {},
+  })
+  const bot = {
+    platform: 'onebot',
+    selfId: 'bot-1',
+    internal: { async _get(action, params) { albumCalls.push(action); return { album_list: [], retcode: 0 } } },
+    async sendMessage() {},
+  }
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    bots: [bot],
+    schema: { set() {} },
+    puppeteer: { page: wikiPage },
+    http: async (url) => {
+      if (String(url).includes('story.example')) return { query: '息壤', total: 0, results: [] }
+      return { query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }
+    },
+  })
+
+  apply(ctx, { ...defaultConfig, wiki: { ...defaultConfig.wiki, storySearchEnabled: false } })
+  const search = commandHandlers.get('w <input:text>')
+  const image = commandHandlers.get('w热点图')
+  const digest = commandHandlers.get('w热点')
+  assert.equal(typeof image, 'function')
+
+  const privateSession = createSession()
+  privateSession.send = async () => undefined
+  assert.equal(String(await image({ session: privateSession, options: {} })), '请在群内使用。')
+
+  const session = createSession()
+  session.guildId = '10001'
+  session.send = async (message) => { sentImages.push(String(message)) }
+  for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+
+  const result = await image({ session, options: {} })
+  assert.equal(result, undefined)
+  // 单图：只发一条图片消息
+  assert.equal(sentImages.length, 1)
+  assert.ok(sentImages[0].includes('U0xJQ0Ut'))
+  // 预览不触相册、不发群提示
+  assert.equal(albumCalls.filter((a) => a === 'upload_image_to_qun_album').length, 0)
+  // 统计窗口不清：文本预览仍能看到词条
+  const preview = await digest({ session, options: {} })
+  assert.match(String(preview), /息壤.*检索 3 次/)
+})
+
+test('w热点图 reports missing puppeteer instead of crashing', async () => {
+  const { apply } = loadPlugin()
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async () => ({ query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }),
+  })
+  apply(ctx, { ...defaultConfig, wiki: { ...defaultConfig.wiki, storySearchEnabled: false } })
+  const search = commandHandlers.get('w <input:text>')
+  const image = commandHandlers.get('w热点图')
+  const session = createSession()
+  session.guildId = '10001'
+  for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+  assert.equal(String(await image({ session, options: {} })), '未启用 puppeteer，无法渲染长图。')
+})
+
+test('console digest preview lists only configured groups, channels first', async () => {
+  const { apply } = loadPlugin()
+  const listeners = new Map()
+  const { ctx, commandHandlers, createSession } = createMockContext({
+    http: async () => ({ query: '息壤', results: [{ slug: 'text_1', name: '息壤', type: 'lore', category: '中枢档案', snippet: '息壤材料。', score: 56 }] }),
+  })
+  ctx.console = { addEntry() {}, addListener(name, fn) { listeners.set(name, fn) } }
+  apply(ctx, {
+    ...defaultConfig,
+    scheduledPush: { enabled: true, cron: '5 8 * * *', channels: ['onebot:10001', 'onebot:10002'] },
+    wiki: { ...defaultConfig.wiki, storySearchEnabled: false, digestAlbums: [] },
+  })
+  const search = commandHandlers.get('w <input:text>')
+  // 10001 有统计、10002 无统计但都配置了渠道；10003 有统计却不在配置里
+  for (const gid of ['10001', '10003']) {
+    const session = createSession()
+    session.guildId = gid
+    for (let i = 0; i < 3; i++) await search({ session, options: {} }, '息壤')
+  }
+  const preview = String((await listeners.get('miyako-intel/wiki-digest-preview')()).text)
+  // 渠道顺序在前：10001 → 10002；只出现这两个群
+  const groups = [...preview.matchAll(/【([^】]*)】/g)].map((m) => m[1])
+  assert.equal(groups.length, 2)
+  assert.ok(groups[0].includes('10001') && groups[1].includes('10002'))
+  assert.ok(!preview.includes('10003'))
+  assert.match(preview, /相册：未选择/)
+  assert.match(preview, /息壤.*检索 3 次/)
+  assert.match(preview, /没有达到 3 次检索/)
+})
+
+test('scheduled push hands every configured channel to miyako-delivery once per day', async () => {
   const { apply } = loadPlugin()
   const calls = []
   const puppeteer = createFakePuppeteer({ calls })
-  const { ctx, intervals, broadcastCalls, loggerLines } = createMockContext({ puppeteer })
+  const mock = createMockContext({ puppeteer })
 
   const config = {
     ...defaultConfig,
@@ -1041,27 +1474,30 @@ test('scheduled push only broadcasts to allowed channels when enabled', async ()
     },
   }
 
-  apply(ctx, config)
-  await intervals[0].callback()
-  await intervals[0].callback()
+  apply(mock.ctx, config)
+  await runScheduled(mock, '12 5 * * *')
+  await runScheduled(mock, '12 5 * * *')
   await new Promise((resolve) => setTimeout(resolve, 20))
 
-  assert.equal(broadcastCalls.length, 1)
-  assert.deepEqual(broadcastCalls[0].channels, ['sandbox:group-1', 'sandbox:group-2'])
+  assert.equal(mock.broadcasts.length, 1)
+  assert.deepEqual(mock.broadcasts[0].map((item) => item.target.channelId), ['sandbox:group-1', 'sandbox:group-2'])
+  assert.equal(mock.broadcasts[0][0].scope, 'miyako-intel:daily')
+  assert.equal(mock.broadcasts[0][0].dedupeKey, '2026-04-29')
   assert.equal(calls.filter((item) => item === 'captureDaily').length, 1)
 })
 
-test('plugin declares database as optional service for scheduled context broadcast', () => {
+test('plugin requires miyako-delivery and keeps database optional', () => {
   const { inject } = loadPlugin()
 
+  assert.equal(inject.required.includes('miyako-delivery'), true)
   assert.equal(inject.optional.includes('database'), true)
 })
 
-test('scheduled push logs configured channel count when context broadcast consumes targets', async () => {
+test('scheduled push logs configured channel count', async () => {
   const { apply } = loadPlugin()
   const calls = []
   const puppeteer = createFakePuppeteer({ calls })
-  const { ctx, intervals, broadcastCalls, loggerLines } = createMockContext({ puppeteer })
+  const mock = createMockContext({ puppeteer })
 
   const config = {
     ...defaultConfig,
@@ -1073,21 +1509,20 @@ test('scheduled push logs configured channel count when context broadcast consum
     },
   }
 
-  apply(ctx, config)
-  await intervals[0].callback()
+  apply(mock.ctx, config)
+  await runScheduled(mock, '12 5 * * *')
 
-  assert.equal(broadcastCalls.length, 1)
-  assert.deepEqual(broadcastCalls[0].channels, ['sandbox:group-1', 'sandbox:group-2'])
-  assert.equal(broadcastCalls[0].forced, true)
-  assert.equal(loggerLines.some(([level, message]) => level === 'info' && /推送开始：2026-04-29，频道 2 个/.test(message)), true)
-  assert.equal(loggerLines.some(([level, message]) => level === 'info' && /推送完成：2026-04-29，频道 2 个/.test(message)), true)
+  assert.equal(mock.broadcasts.length, 1)
+  assert.equal(mock.broadcasts[0].length, 2)
+  assert.equal(mock.loggerLines.some(([level, message]) => level === 'info' && /推送开始：2026-04-29，频道 2 个/.test(message)), true)
+  assert.equal(mock.loggerLines.some(([level, message]) => level === 'info' && /推送完成：2026-04-29，频道 2 个/.test(message)), true)
 })
 
-test('scheduled push waits for cron expression minute', async () => {
+test('scheduled push does not judge the minute locally; the expression is registered as-is', async () => {
   const { apply } = loadPlugin()
   const calls = []
   const puppeteer = createFakePuppeteer({ calls })
-  const { ctx, intervals, broadcastCalls, loggerLines } = createMockContext({ puppeteer })
+  const mock = createMockContext({ puppeteer })
 
   const config = {
     ...defaultConfig,
@@ -1099,19 +1534,21 @@ test('scheduled push waits for cron expression minute', async () => {
     },
   }
 
-  apply(ctx, config)
-  await intervals[0].callback()
-  await new Promise((resolve) => setTimeout(resolve, 800))
+  apply(mock.ctx, config)
+  const task = mock.schedules.find((item) => item.expression === '12 5 * * *')
+  assert.ok(task)
+  assert.equal(task.options.timeZone, 'Asia/Shanghai')
+  assert.equal(mock.broadcasts.length, 0)
 
-  assert.equal(broadcastCalls.length, 0)
-  assert.equal(calls.filter((item) => item === 'captureDaily').length, 0)
+  await task.run()
+  assert.equal(mock.broadcasts.length, 1)
 })
 
 test('silent log level suppresses routine scheduled push logs', async () => {
   const { apply } = loadPlugin()
   const calls = []
   const puppeteer = createFakePuppeteer({ calls })
-  const { ctx, intervals, loggerLines } = createMockContext({ puppeteer })
+  const mock = createMockContext({ puppeteer })
 
   const config = {
     ...defaultConfig,
@@ -1124,11 +1561,11 @@ test('silent log level suppresses routine scheduled push logs', async () => {
     },
   }
 
-  apply(ctx, config)
-  await intervals[0].callback()
+  apply(mock.ctx, config)
+  await runScheduled(mock, '12 5 * * *')
   await new Promise((resolve) => setTimeout(resolve, 800))
 
-  assert.equal(loggerLines.length, 0)
+  assert.equal(mock.loggerLines.length, 0)
 })
 
 test('story bundle update failures are logged by log level', async () => {
@@ -1148,7 +1585,11 @@ test('story bundle update failures are logged by log level', async () => {
       storyBundleManifestUrl: 'https://example.test/warfarin-story-cn.manifest.json',
     },
   })
-  await new Promise((resolve) => setTimeout(resolve, 800))
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline
+    && !loggerLines.some(([level, message]) => level === 'warn' && /GitHub 全文合集/.test(message) && /github unreachable/.test(message))) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
 
   assert.equal(loggerLines.some(([level, message]) => level === 'warn' && /GitHub 全文合集/.test(message) && /github unreachable/.test(message)), true)
 })
@@ -1398,7 +1839,7 @@ test('failed capture ships the apology card and leaves today uncached', async ()
   const calls = []
   const puppeteer = createFakePuppeteer({ calls, raw: FAKE_RAW_EMPTY })
   const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer })
-  apply(ctx, { ...defaultConfig, dailyCardEnabled: true, fallbackReason: 'courier' })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true }, { random: () => 0.4 })
 
   const session = createSession()
   const reply = await commandHandlers.get('prts.d')({ session, options: {} })
@@ -1420,7 +1861,7 @@ test('failed capture ships the apology card and leaves today uncached', async ()
 test('browser-less fallback ships the bare artwork with the configured reason', async () => {
   const { apply } = loadPlugin()
   const { ctx, commandHandlers, createSession } = createMockContext({ puppeteer: createFailingPuppeteer() })
-  apply(ctx, { ...defaultConfig, dailyCardEnabled: true, fallbackReason: 'packet' })
+  apply(ctx, { ...defaultConfig, dailyCardEnabled: true }, { random: () => 0.9 })
 
   const session = createSession()
   const reply = await commandHandlers.get('prts.d')({ session, options: {} })

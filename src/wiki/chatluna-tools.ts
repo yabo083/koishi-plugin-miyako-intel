@@ -1,5 +1,6 @@
-// ChatLuna 工具接入：把 wiki 客户端包成模型能自己调的两个函数 schema
-import { WarfarinWikiClient } from '../services/warfarin-wiki'
+// ChatLuna 工具接入：两阶段检索——search 只给候选，read 才回受限正文
+import { WarfarinWikiContextResult, WarfarinWikiSearchResult } from '../services/warfarin-wiki'
+import { excerptAroundKeyword, formatWikiContext } from './format'
 
 export interface ChatLunaToolDefinition {
   name: string
@@ -8,31 +9,53 @@ export interface ChatLunaToolDefinition {
   execute: (input: Record<string, any>) => Promise<any>
 }
 
-export function createWarfarinWikiTools(client: Pick<WarfarinWikiClient, 'search' | 'context'>): ChatLunaToolDefinition[] {
+export interface WarfarinWikiToolsDeps {
+  search: (keyword: string) => Promise<WarfarinWikiSearchResult>
+  context: (anchorId: string, scope?: string) => Promise<WarfarinWikiContextResult>
+  topK: number
+  excerptChars: number
+  contextChars: number
+}
+
+export function createWarfarinWikiTools(deps: WarfarinWikiToolsDeps): ChatLunaToolDefinition[] {
   return [
     {
       name: 'warfarin_wiki_search',
-      description: 'Search Warfarin Wiki official index by keyword.',
+      description: '按关键词检索 Warfarin Wiki，返回候选条目的 anchor_id、scope、来源与摘要。',
       parameters: { type: 'object', properties: { keyword: { type: 'string' } }, required: ['keyword'] },
-      execute: (input) => client.search({ keyword: String(input.keyword || '') }),
+      execute: async (input) => {
+        const keyword = String(input.keyword || '')
+        const result = await deps.search(keyword)
+        return result.results.slice(0, deps.topK).map((item) => ({
+          anchor_id: item.anchor_id,
+          scope: item.scope,
+          source: item.source,
+          excerpt: excerptAroundKeyword(item.content, keyword, deps.excerptChars),
+        }))
+      },
     },
     {
-      name: 'warfarin_wiki_context',
-      description: 'Fetch best-effort source context for a Warfarin Wiki slug or anchor id.',
+      name: 'warfarin_wiki_read',
+      description: '读取指定 Warfarin Wiki 条目正文。正文仅供模型参考，不得原样转发到群。',
       parameters: {
         type: 'object',
         properties: {
           anchor_id: { type: 'string' },
-          need_summary: { type: 'boolean' },
-          context_range: { type: 'number', minimum: 0, maximum: 10 },
+          scope: { type: 'string' },
         },
         required: ['anchor_id'],
       },
-      execute: (input) => client.context({
-        anchorId: String(input.anchor_id || ''),
-        needSummary: input.need_summary === true,
-        contextRange: input.context_range === undefined ? undefined : Number(input.context_range),
-      }),
+      execute: async (input) => {
+        const result = await deps.context(String(input.anchor_id || ''), input.scope ? String(input.scope) : undefined)
+        const text = formatWikiContext(result, { mode: 'clipped', maxChars: deps.contextChars })
+        return {
+          anchor_id: result.anchor.anchor_id,
+          source: result.source_ref || result.anchor.source,
+          text,
+          truncated: text.includes('已节选'),
+          url: result.anchor.url,
+        }
+      },
     },
   ]
 }

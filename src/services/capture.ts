@@ -4,12 +4,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { TIMEZONE } from '../core/constants'
-import { matchesCronExpression } from '../core/cron'
 import { formatError } from '../core/errors'
 import { getZonedParts } from '../core/time'
 import { CachedImageResult, CaptureKind } from '../types'
+import { ensureRenderFontsCssLinks } from './render-fonts'
 import { buildSealSlots, renderCardByStyle, resolveCardStyle } from './card-template'
-import { DEFAULT_FALLBACK_REASON, FALLBACK_REASONS, readFallbackImage, readPngSize, renderFallbackHtml } from './card-fallback'
+import { pickFallbackReason, readFallbackImage, readPngSize, renderFallbackHtml } from './card-fallback'
 import { DailyCardData, DailyCoreItem, DailyOperator, SealSlot } from './card-types'
 import { DailyImageCache } from './cache'
 
@@ -18,7 +18,7 @@ const HOMEPAGE_URL = 'https://prts.wiki/w/%E9%A6%96%E9%A1%B5'
 const NAVIGATION_TIMEOUT_MS = 45000
 const RENDER_DELAY_MS = 800
 const VIEWPORT = { width: 1280, height: 900, deviceScaleFactor: 1 }
-const QQ_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+export const QQ_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 const ART_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const RENDER_FONTS_VERSION = 2
 // 「泰拉周刊」正文用 500、标题用 900，宋体四档一起备好
@@ -345,26 +345,21 @@ export class PrtsCaptureService {
     private readonly ctx: { puppeteer?: { page: () => Promise<any> } },
     private readonly cache: DailyImageCache,
     private readonly logger: { warn: (message: string) => void; info: (message: string) => void; debug?: (message: string) => void },
-    private readonly options: { refreshCron?: string; fetcher?: DailyFetcher; nowProvider?: () => Date; styleId?: string; fallbackReason?: string } = {},
+    private readonly options: { fetcher?: DailyFetcher; nowProvider?: () => Date; styleId?: string; random?: () => number } = {},
   ) {}
 
   async getDailyInfo(force = false): Promise<CachedImageResult> {
     return this.resolveCachedImage('daily', force, () => this.captureDailyCard())
   }
 
-  async refreshDue() {
-    const refreshCron = this.options.refreshCron || '5 4 * * *'
-    const parts = getZonedParts(new Date(), TIMEZONE)
-    if (!matchesCronExpression(refreshCron, parts)) {
-      this.logger.debug?.(`日报定时刷新未到触发时间：${refreshCron}`)
-      return
-    }
+  /** 定时刷新入口：触发时机由 miyako-delivery 的 cron 负责，这里只保证「今天还没缓存就抓一次」 */
+  async refreshIfMissing() {
     if (await this.cache.hasToday('daily')) {
       this.logger.debug?.('日报定时刷新跳过：今日缓存已存在。')
       return
     }
     try {
-      this.logger.info(`日报定时刷新开始：${refreshCron}`)
+      this.logger.info('日报定时刷新开始。')
       await this.getDailyInfo(true)
       this.logger.info('日报定时刷新完成。')
     } catch (error) {
@@ -393,7 +388,7 @@ export class PrtsCaptureService {
   private async renderFallbackCard(): Promise<CachedImageResult> {
     const fallbackImage = await readFallbackImage()
     try {
-      const reason = FALLBACK_REASONS[this.options.fallbackReason || ''] ?? FALLBACK_REASONS[DEFAULT_FALLBACK_REASON]
+      const reason = pickFallbackReason(this.options.random)
       const message = reason.sentence(resolveCardStyle(this.options.styleId).shortLabel)
       const { width, height } = readPngSize(fallbackImage)
       const html = renderFallbackHtml({
@@ -588,37 +583,7 @@ export class PrtsCaptureService {
   /* ---------- 渲染资源（字体） ---------- */
 
   private async ensureRenderAssets(): Promise<string> {
-    try {
-      const lxgwDir = path.dirname(require.resolve('lxgw-wenkai-lite-webfont/lxgwwenkailite-regular.css'))
-      const zmxDir = path.dirname(require.resolve('@fontsource/zhi-mang-xing/index.css'))
-      const serifDir = path.dirname(require.resolve('@fontsource/noto-serif-sc/chinese-simplified-400.css'))
-      const version = JSON.stringify({
-        version: RENDER_FONTS_VERSION,
-        lxgw: readPackageVersion(lxgwDir),
-        zmx: readPackageVersion(zmxDir),
-        serif: readPackageVersion(serifDir),
-      })
-      // 字体按版本共享在系统临时目录，多实例/多测试只复制一次
-      const hash = createHash('md5').update(version).digest('hex').slice(0, 8)
-      const fontsDir = path.join(os.tmpdir(), 'miyako-intel-render-fonts', hash)
-      if (!await exists(path.join(fontsDir, 'version.json'))) {
-        await fs.rm(fontsDir, { recursive: true, force: true })
-        await copyInto(lxgwDir, path.join(fontsDir, 'lxgw'), ['lxgwwenkailite-regular.css', 'lxgwwenkailite-bold.css'])
-        await copyInto(zmxDir, path.join(fontsDir, 'zmx'), ['index.css'])
-        await copyInto(serifDir, path.join(fontsDir, 'serif'), SERIF_CSS_FILES, /chinese-simplified-[4579]00[^/]*\.woff2$/)
-        await fs.writeFile(path.join(fontsDir, 'version.json'), version, 'utf8')
-        this.logger.debug?.('日报渲染字体资源已就绪。')
-      }
-      return [
-        'lxgw/lxgwwenkailite-regular.css',
-        'lxgw/lxgwwenkailite-bold.css',
-        'zmx/index.css',
-        ...SERIF_CSS_FILES.map((file) => `serif/${file}`),
-      ].map((relative) => `<link rel="stylesheet" href="${pathToFileURL(path.join(fontsDir, relative)).href}">`).join('\n')
-    } catch (error) {
-      this.logger.warn(`渲染字体资源缺失，退化为系统楷体：${formatError(error)}`)
-      return ''
-    }
+    return ensureRenderFontsCssLinks(this.logger)
   }
 
   /* ---------- 页面工具 ---------- */

@@ -261,6 +261,18 @@ test('renderFallbackHtml writes the apology into the sign area', () => {
   assert.match(html, /<p class="sign-text" style="font-size: 47px">很抱歉博士！今日的「泰拉周刊」被见习信使弄丢了。<\/p>/)
 })
 
+test('pickFallbackReason covers the whole pool and honours the when word', () => {
+  const { pickFallbackReason, FALLBACK_REASONS } = require('../lib/services/card-fallback.js')
+  const ids = Object.keys(FALLBACK_REASONS)
+  // 注入的 random 命中池里的每一条
+  ids.forEach((id, index) => {
+    assert.equal(pickFallbackReason(() => index / ids.length + 0.001).id, id)
+  })
+  // 周报 404 用「本周」时间词
+  assert.equal(pickFallbackReason(() => 0).sentence('热点周报', '本周'), '很抱歉博士！本周的「热点周报」遇到了天灾。')
+  assert.equal(pickFallbackReason(() => 0.5).sentence('热点周报', '本周'), '很抱歉博士！本周的「热点周报」被见习信使弄丢了。')
+})
+
 test('compressStageCodes keeps leading zeros and merges contiguous codes', () => {
   assert.equal(compressStageCodes(['TO-EX-1', 'TO-EX-2', 'TO-EX-8']), 'TO-EX-1、TO-EX-2、TO-EX-8')
   assert.equal(compressStageCodes(['EE-01 奇象收录时间！'.split(' ')[0], 'EE-02', 'EE-03']), 'EE-01 ~ EE-03')

@@ -4,7 +4,8 @@ const assert = require('node:assert/strict')
 const { buildOneBotForwardNodes, batchOneBotForwardNodes, FORWARD_BATCH_CHARS } = require('../lib/wiki/onebot-forward.js')
 const { createWikiReplySender } = require('../lib/wiki/reply.js')
 
-const config = { groupForwardEnabled: true, groupForwardNodeLineLimit: 20, groupForwardSenderName: 'Warfarin Wiki', groupForwardSenderUin: '2854196310' }
+// 本文件只测分片/转发行为；混淆会涨长正文、多拆一张卡，单独有回归覆盖
+const config = { groupForwardEnabled: true, groupForwardNodeLineLimit: 20, groupForwardSenderName: 'Warfarin Wiki', groupForwardSenderUin: '2854196310', obfuscateEnabled: false }
 const logger = { info() {}, warn() {}, error() {}, debug() {} }
 const SECTION = (title, body) => `${title}：${body}`
 

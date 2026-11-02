@@ -1,8 +1,6 @@
 import { gunzipSync } from "node:zlib"
 
-export const bundledStorySeedLanguage = "cn"
-export const bundledStorySeedVersion = 4
-export const bundledStorySeedCount = 2233
+export { bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion } from "./warfarin-story-seed-meta"
 const bundledStorySeedChunks = [
   "H4sIAAAAAAACCuy9WW8rS3Ym+leM/VywOQ/1dtFP/XB/QfdFgSNsuFxlnKpqd6PRQFIS51ESJVIkJYoSKVIDJ41kJgfg/pRzMiIz",
   "n85fuHetFZlMDefsLbu3YbsJFKp2UTlERqxYsYZvfeu//M8voT9E/vaPP/zu76JffvvlD6Effhf9Y+Qv/xD7w59/998c0cDvnI7f",

@@ -44,7 +44,7 @@ function determineBuild({ manifest, seed, sourceUpdatedAt }) {
 
 async function readSeedMetadata() {
   const [seedSource, builderSource] = await Promise.all([
-    readFile(new URL('../src/services/warfarin-story-seed.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/services/warfarin-story-seed-meta.ts', import.meta.url), 'utf8'),
     readFile(new URL('./build-warfarin-story-bundle.mjs', import.meta.url), 'utf8'),
   ])
   const parserVersion = Number(builderSource.match(/const parserVersion\s*=\s*(\d+)/)?.[1])

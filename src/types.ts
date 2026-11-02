@@ -3,8 +3,7 @@ export interface Config {
   dailyCardEnabled: boolean
   /** 日报卡片风格 id（见 card-template 的 CARD_STYLES） */
   cardStyle: string
-  /** 日报生成失败时回退卡片上写的理由 id（见 card-fallback 的 FALLBACK_REASONS） */
-  fallbackReason: string
+
   refreshCron: string
   logLevel: LogLevel
   scheduledPush: ScheduledPushConfig
@@ -31,11 +30,33 @@ export interface WarfarinWikiConfig {
   pageSize: number
   initialPageCount: number
   selectionTtlMs: number
+  /** 列表单条摘要长度（关键词居中截取的窗口字数） */
+  excerptChars: number
+  /** 详情正文展示模式：仅链接 / 截断 / 全文 */
+  contextMode: WikiContextMode
+  /** 详情正文截断长度（clipped 模式生效） */
+  contextChars: number
   groupForwardEnabled: boolean
   groupForwardNodeLineLimit: number
   groupForwardSenderName: string
   groupForwardSenderUin: string
+  obfuscateEnabled: boolean
+  obfuscateZeroWidthInterval: number
+  obfuscateHomophones: Array<{ from: string; to: string }>
+  digestEnabled: boolean
+  digestCron: string
+  digestMinCount: number
+  /** 周报 Top N 个检索词条 */
+  digestTopN: number
+  /** 「群号/相册ID」：热点检索词条周报长图按群上传到对应相册 */
+  digestAlbums: string[]
+  /** 上传成功后在群里发一行提示 */
+  digestNotify: boolean
+  digestResetAfterSend: boolean
+  albumUploadTimeoutMs: number
 }
+
+export type WikiContextMode = 'link' | 'clipped' | 'full'
 
 export type WarfarinWikiMode = 'official' | 'anchor'
 

@@ -1,10 +1,11 @@
-// 回复发送：群聊/私聊统一走 OneBot 合并转发（按 4000 字拆多张卡片），转发不可用时按长度分片发普通文本
+// 回复发送：群聊/私聊统一走 OneBot 合并转发（超长拆多张卡片），转发不可用时按长度分片发普通文本
 import { ScopedLogger } from '../core/logger'
 import { sanitizeForwardError } from '../core/errors'
 import { Config as RuntimeConfig } from '../types'
 import { WikiReplyPayload } from './fold'
 import { batchOneBotForwardNodes, buildOneBotForwardNodes, canSendSingleCardForward, ForwardUncertainError, sendOneBotForwardNodesWithRetry } from './onebot-forward'
 import { splitWikiMessage } from './message-split'
+import { obfuscateOutgoing } from './obfuscate'
 
 type WikiConfig = RuntimeConfig['wiki']
 
@@ -25,14 +26,29 @@ export interface WikiReplySender {
   from: (session: any, create: () => Promise<WikiReplyPayload> | WikiReplyPayload) => Promise<string | undefined>
 }
 
+function normalizePayload(payload: WikiReplyPayload) {
+  const texts = typeof payload === 'string' ? [payload] : payload || []
+  return texts.filter(Boolean)
+}
+
 export function createWikiReplySender(wikiConfig: WikiConfig, logger: ScopedLogger): WikiReplySender {
+  const obfuscate = (text: string) => obfuscateOutgoing(text, {
+    enabled: wikiConfig.obfuscateEnabled ?? true,
+    zeroWidthInterval: wikiConfig.obfuscateZeroWidthInterval ?? 6,
+    homophones: wikiConfig.obfuscateHomophones ?? [],
+  })
+
   async function send(session: any, payload: WikiReplyPayload) {
-    const messages = (Array.isArray(payload) ? payload : [payload]).filter(Boolean) as string[]
-    if (!messages.length) return Array.isArray(payload) ? undefined : payload || undefined
+    const texts = normalizePayload(payload)
+    if (!texts.length) return undefined
     const pending: string[] = []
     if (shouldSendForward(session, wikiConfig)) {
-      const nodes = buildOneBotForwardNodes(messages, wikiConfig)
-      const batches = !nodes.length ? [] : canSendSingleCardForward(session) ? [nodes] : batchOneBotForwardNodes(nodes)
+      // 出站混淆打在节点内容上，news 预览与失败回退都沿用同一份文本
+      const nodes = buildOneBotForwardNodes(texts, wikiConfig)
+        .map((node) => ({ ...node, data: { ...node.data, content: obfuscate(node.data.content) } }))
+      const batches = !nodes.length ? [] : canSendSingleCardForward(session)
+        ? [nodes]
+        : batchOneBotForwardNodes(nodes)
       let forwardOk = batches.length > 0
       for (const batch of batches) {
         if (!forwardOk) {
@@ -53,13 +69,14 @@ export function createWikiReplySender(wikiConfig: WikiConfig, logger: ScopedLogg
         if (!forwardOk) pending.push(...batch.map((node) => node.data.content))
       }
       if (forwardOk) return undefined
-    } else {
-      pending.push(...messages)
     }
-    const chunks = pending.flatMap((message) => splitWikiMessage(message))
-    if (!chunks.length) return undefined
-    if (chunks.length === 1) return chunks[0]
-    for (const chunk of chunks) await session.send(chunk)
+    // 纯文本路径只留一条出口：转发失败的回退文本（节点内容已混淆过）按原样切片
+    const outgoing = pending.length
+      ? pending.flatMap((chunk) => splitWikiMessage(chunk))
+      : texts.flatMap((text) => splitWikiMessage(text).map(obfuscate))
+    if (!outgoing.length) return undefined
+    if (outgoing.length === 1) return outgoing[0]
+    for (const chunk of outgoing) await session.send(chunk)
     return undefined
   }
 

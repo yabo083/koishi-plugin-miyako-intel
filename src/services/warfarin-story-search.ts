@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
 import { gunzipSync } from 'node:zlib'
-import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult, foldVariantDuplicates } from './warfarin-wiki'
-import { bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion, loadBundledStorySeed } from './warfarin-story-seed'
+import { WarfarinWikiAnchor, WarfarinWikiContextResult, WarfarinWikiSearchResult, clampInteger, foldVariantDuplicates } from './warfarin-wiki'
+import { bundledStorySeedCount, bundledStorySeedLanguage, bundledStorySeedVersion } from './warfarin-story-seed-meta'
+import { stripZeroWidth } from '../wiki/obfuscate'
 
 export interface WarfarinStorySearchOptions {
   baseDir: string
@@ -32,13 +35,28 @@ export interface StoryAnchor extends WarfarinWikiAnchor {
   raw_sha256?: string
 }
 
+const STORE_FILE = 'store.ndjson'
+const SEARCH_RESULT_LIMIT = 200
+const SEARCH_EXCERPT_CHARS = 160
+
+// 常驻内存用 Structure-of-Arrays：检索只需 anchor_id/source/scope/url/content，
+// full_text 留在 store.ndjson 里按行偏移回读，省掉约 6 MB 的对象与全文常驻。
 export class WarfarinStorySearchService {
   private readonly root: string
   private readonly language: string
   private readonly timeoutMs: number
   private readonly bundleManifestUrl: string
   private readonly fetchImpl: (url: string, init?: Record<string, any>) => Promise<any>
-  private anchors: StoryAnchor[] = []
+  private ids: string[] = []
+  private sources: string[] = []
+  private sourcesLower: Array<string | null> = []
+  private scopes: string[] = []
+  private urls: string[] = []
+  private contents: string[] = []
+  private contentsLower: Array<string | null> = []
+  private offsets = new Float64Array(0)
+  private lengths = new Uint32Array(0)
+  private idIndex = new Map<string, number | number[]>()
   private loaded = false
   private loading?: Promise<void>
 
@@ -60,7 +78,32 @@ export class WarfarinStorySearchService {
 
   private async loadAnchors() {
     const dir = this.anchorsDir()
-    const files = await readdir(dir).catch(() => [])
+    const files = await readdir(dir).catch(() => [] as string[])
+    const manifest = await this.readLocalManifest()
+    let count = -1
+    if (files.includes(STORE_FILE)) {
+      await this.loadStore()
+      count = this.ids.length
+    } else if (files.some((file) => file.endsWith('.json'))) {
+      const anchors = await this.readLegacyAnchors(dir, files)
+      if (anchors.length && !this.shouldReplaceWithBundledSeed(files, anchors.length, manifest)) {
+        // 旧格式就地迁移：合并成 store.ndjson，清单打上格式标记，清掉旧文件
+        await this.writeStore(anchors)
+        await this.patchManifest({ storeFormat: 'ndjson' })
+        await this.loadStore()
+        this.loaded = true
+        return
+      }
+      count = anchors.length ? anchors.length : -1
+    }
+    if (count < 0 || this.shouldReplaceWithBundledSeed(files, count, manifest)) {
+      if (await this.installBundledSeed()) await this.loadStore()
+    }
+    this.loaded = true
+  }
+
+  /** 旧版 anchors/*.json：数组或单对象，一次性读完即弃（迁移专用路径） */
+  private async readLegacyAnchors(dir: string, files: string[]) {
     const anchors: StoryAnchor[] = []
     for (const file of files) {
       if (!file.endsWith('.json')) continue
@@ -68,50 +111,134 @@ export class WarfarinStorySearchService {
       if (Array.isArray(payload)) anchors.push(...payload.filter(isStoryAnchor))
       else if (isStoryAnchor(payload)) anchors.push(payload)
     }
-    const manifest = await this.readLocalManifest()
-    if (!anchors.length || this.shouldReplaceWithBundledSeed(files, anchors.length, manifest)) {
-      anchors.length = 0
-      anchors.push(...await this.installBundledSeed())
-    }
-    this.anchors = anchors
-    this.loaded = true
+    return anchors
   }
 
-  async search(input: { keyword: string }): Promise<WarfarinWikiSearchResult> {
+  /** 流式读 store.ndjson：逐行解析、记录字节偏移，不产生整份字符串 */
+  private async loadStore() {
+    const ids: string[] = []
+    const sources: string[] = []
+    const sourcesLower: Array<string | null> = []
+    const scopes: string[] = []
+    const urls: string[] = []
+    const contents: string[] = []
+    const contentsLower: Array<string | null> = []
+    const offsets: number[] = []
+    const lengths: number[] = []
+    const idIndex = new Map<string, number | number[]>()
+    const lines = createInterface({ input: createReadStream(this.storePath()), crlfDelay: Infinity })
+    let offset = 0
+    for await (const line of lines) {
+      const length = Buffer.byteLength(line)
+      const anchor = parseStoreLine(line)
+      if (anchor) {
+        const index = ids.length
+        ids.push(anchor.anchor_id)
+        sources.push(anchor.source)
+        sourcesLower.push(lowerOrNull(anchor.source))
+        scopes.push(anchor.scope)
+        urls.push(anchor.url || '')
+        contents.push(anchor.content)
+        contentsLower.push(lowerOrNull(anchor.content))
+        offsets.push(offset)
+        lengths.push(length)
+        const rows = idIndex.get(anchor.anchor_id)
+        if (rows === undefined) idIndex.set(anchor.anchor_id, index)
+        else if (typeof rows === 'number') idIndex.set(anchor.anchor_id, [rows, index])
+        else rows.push(index)
+      }
+      offset += length + 1
+    }
+    this.ids = ids
+    this.sources = sources
+    this.sourcesLower = sourcesLower
+    this.scopes = scopes
+    this.urls = urls
+    this.contents = contents
+    this.contentsLower = contentsLower
+    this.offsets = Float64Array.from(offsets)
+    this.lengths = Uint32Array.from(lengths)
+    this.idIndex = idIndex
+  }
+
+  /** 先写临时文件再 rename：中途崩溃时旧 store 仍然完好 */
+  private async writeStore(anchors: StoryAnchor[]) {
+    const dir = this.anchorsDir()
+    await mkdir(dir, { recursive: true })
+    const storePath = this.storePath()
+    const temporaryPath = `${storePath}.${process.pid}.tmp`
+    await writeFile(temporaryPath, anchors.map((anchor) => JSON.stringify(anchor)).join('\n') + '\n')
+    await rename(temporaryPath, storePath)
+    for (const file of await readdir(dir)) {
+      if (file === STORE_FILE) continue
+      await rm(join(dir, file), { force: true })
+    }
+  }
+
+  async search(input: { keyword: string; limit?: number }): Promise<WarfarinWikiSearchResult> {
     await this.ensureLoaded()
     const keyword = normalizeKeyword(input.keyword)
     if (!keyword) return { results: [], total: 0, took_ms: 0 }
     const started = Date.now()
     const needle = keyword.toLowerCase()
-    const scored = this.anchors
-      .map((anchor) => ({ anchor, score: scoreStoryAnchor(anchor, needle) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
+    const { ids, sources, sourcesLower, contents, contentsLower } = this
+    const hits: Array<{ index: number; score: number }> = []
+    for (let index = 0; index < ids.length; index++) {
+      const score = (sourcesLower[index] ?? sources[index]).includes(needle) ? 100
+        : (contentsLower[index] ?? contents[index]).includes(needle) ? 50
+        : 0
+      if (!score) continue
+      hits.push({ index, score })
+    }
+    // sort 在 ES2019 起稳定：分数降序、同分按行序
+    hits.sort((a, b) => b.score - a.score)
+    const total = hits.length
+    const limit = clampInteger(input.limit, SEARCH_RESULT_LIMIT, 1, 10000)
     // 与官方搜索共用折叠规则：同"来源标签+正文"的变体折叠为一条并提示数量，不静默丢弃。
-    const folded = foldVariantDuplicates(scored.map(({ anchor, score }) => ({
-      ...anchor,
-      source: displayStorySource(anchor),
+    const folded = foldVariantDuplicates(hits.slice(0, limit).map(({ index, score }) => ({
+      anchor_id: ids[index],
+      content: contents[index],
+      source: this.displaySource(index),
+      scope: this.scopes[index],
+      url: this.urls[index] || undefined,
       relevance: score,
     })))
     const results = folded.map((item) => ({
       anchor_id: item.anchor_id,
-      content: excerptAroundKeyword(item.content, keyword, 160),
+      content: excerptAroundKeyword(item.content, keyword, SEARCH_EXCERPT_CHARS),
       source: item.source,
       scope: item.scope,
       relevance: item.relevance,
     }))
-    return { results, total: results.length, took_ms: Date.now() - started }
+    return { results, total, took_ms: Date.now() - started }
   }
 
-  async context(input: { anchorId: string }): Promise<WarfarinWikiContextResult> {
+  async context(input: { anchorId: string; scope?: string }): Promise<WarfarinWikiContextResult> {
     await this.ensureLoaded()
-    const anchor = this.anchors.find((item) => item.anchor_id === input.anchorId)
-    if (!anchor) throw new Error(`anchor_id '${input.anchorId}' not found`)
+    const rows = this.idIndex.get(input.anchorId)
+    if (rows === undefined) throw new Error(`anchor_id '${input.anchorId}' not found`)
+    // anchor_id 不唯一（items/gear 同物两行）：优先按调用方给的 scope 取对应行
+    const list = typeof rows === 'number' ? [rows] : rows
+    const index = (input.scope ? list.find((row) => this.scopes[row] === input.scope) : undefined) ?? list[0]
+    const anchor = await this.readAnchorAt(index)
+    const { full_text, ...rest } = anchor
+    const source = displayStorySource(anchor)
     return {
-      anchor: { ...anchor, source: displayStorySource(anchor) },
-      full_text: anchor.full_text,
+      anchor: { ...rest, source },
+      full_text,
       summary: null,
-      source_ref: displayStorySource(anchor) || anchor.source_ref,
+      source_ref: source || anchor.source_ref,
+    }
+  }
+
+  private async readAnchorAt(index: number): Promise<StoryAnchor> {
+    const handle = await open(this.storePath(), 'r')
+    try {
+      const buffer = Buffer.alloc(this.lengths[index])
+      await handle.read(buffer, 0, buffer.length, this.offsets[index])
+      return JSON.parse(buffer.toString('utf8'))
+    } finally {
+      await handle.close()
     }
   }
 
@@ -126,11 +253,11 @@ export class WarfarinStorySearchService {
     }
     const updatedAt = new Date().toISOString()
     await this.load()
-    return { success: this.anchors.length, failed: warning ? 1 : 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt, warning: warning || undefined }
+    return { success: this.size, failed: warning ? 1 : 0, skipped: this.size, pending: 0, refreshed: 0, updatedAt, warning: warning || undefined }
   }
 
   get size() {
-    return this.anchors.length
+    return this.ids.length
   }
 
   async getDataUpdatedLabel() {
@@ -146,16 +273,21 @@ export class WarfarinStorySearchService {
   }
 
   private async installBundledSeed() {
-    if (this.language !== bundledStorySeedLanguage) return []
-    const anchors = loadBundledStorySeed().filter(isStoryAnchor)
-    if (!anchors.length) return []
-    await rm(this.anchorsDir(), { recursive: true, force: true })
-    await mkdir(this.anchorsDir(), { recursive: true })
-    await writeFile(join(this.anchorsDir(), 'seed.json'), JSON.stringify(anchors, null, 2))
-    const updatedAt = new Date().toISOString()
-    await mkdir(join(this.root, this.language), { recursive: true })
-    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, seeded: anchors.length, bundledStorySeedVersion, bundledStorySeedCount }, null, 2))
-    return anchors
+    if (this.language !== bundledStorySeedLanguage) return false
+    // base64 种子模块只在安装时加载，用完即移出 require.cache，不常驻内存
+    const seedPath = require.resolve('./warfarin-story-seed')
+    try {
+      const seed = require(seedPath) as typeof import('./warfarin-story-seed')
+      const anchors = seed.loadBundledStorySeed().filter(isStoryAnchor)
+      if (!anchors.length) return false
+      await this.writeStore(anchors)
+      const updatedAt = new Date().toISOString()
+      await mkdir(join(this.root, this.language), { recursive: true })
+      await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, seeded: anchors.length, bundledStorySeedVersion, bundledStorySeedCount, storeFormat: 'ndjson' }, null, 2))
+      return true
+    } finally {
+      delete require.cache[seedPath]
+    }
   }
 
   private async updateFromBundle(): Promise<WarfarinStoryUpdateReport | undefined> {
@@ -167,7 +299,7 @@ export class WarfarinStorySearchService {
     if (manifest?.sha256 && localManifest?.storyBundleSha256 === manifest.sha256) {
       await this.load()
       const updatedAt = new Date().toISOString()
-      return { success: this.anchors.length, failed: 0, skipped: this.anchors.length, pending: 0, refreshed: 0, updatedAt }
+      return { success: this.size, failed: 0, skipped: this.size, pending: 0, refreshed: 0, updatedAt }
     }
     const compressed = await readBuffer(await this.fetchWithTimeout(bundleUrl, { responseType: 'arraybuffer' }))
     const sha256 = createHash('sha256').update(compressed).digest('hex')
@@ -180,23 +312,12 @@ export class WarfarinStorySearchService {
     const anchors = (Array.isArray(payload) ? payload : payload?.anchors || []).filter(isStoryAnchor)
     if (!anchors.length) throw new Error('story bundle has no usable anchors')
     if (this.isOfficialBundle(manifest) && this.isOlderThanBundledSeed(anchors.length)) throw new Error(`story bundle is older than bundled seed: ${anchors.length} < ${bundledStorySeedCount}`)
-    const anchorsDir = this.anchorsDir()
-    await mkdir(anchorsDir, { recursive: true })
-    // 先写临时文件再 rename：中途崩溃/写盘失败时旧的 bundle.json 仍然完好，
-    // 不会出现「目录已被清空、新文件还没写完」的数据丢失窗口。
-    const bundlePath = join(anchorsDir, 'bundle.json')
-    const temporaryPath = `${bundlePath}.${process.pid}.tmp`
-    await writeFile(temporaryPath, JSON.stringify(anchors, null, 2))
-    await rename(temporaryPath, bundlePath)
-    for (const file of await readdir(anchorsDir)) {
-      if (file === 'bundle.json') continue
-      await rm(join(anchorsDir, file), { force: true })
-    }
-    this.anchors = anchors
+    await this.writeStore(anchors)
+    await this.loadStore()
     this.loaded = true
     const updatedAt = new Date().toISOString()
     await mkdir(join(this.root, this.language), { recursive: true })
-    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, storyBundleSha256: sha256, storyBundleUpdatedAt: manifest?.updatedAt || '', storyBundleSourceUpdatedAt: manifest?.sourceUpdatedAt || '' }, null, 2))
+    await writeFile(join(this.root, this.language, 'manifest.json'), JSON.stringify({ language: this.language, updatedAt, success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, storyBundleSha256: sha256, storyBundleUpdatedAt: manifest?.updatedAt || '', storyBundleSourceUpdatedAt: manifest?.sourceUpdatedAt || '', storeFormat: 'ndjson' }, null, 2))
     return { success: anchors.length, failed: 0, skipped: 0, pending: 0, refreshed: anchors.length, updatedAt }
   }
 
@@ -204,9 +325,18 @@ export class WarfarinStorySearchService {
     return readFile(join(this.root, this.language, 'manifest.json'), 'utf8').then(JSON.parse).catch(() => null)
   }
 
+  private async patchManifest(patch: Record<string, unknown>) {
+    const dir = join(this.root, this.language)
+    await mkdir(dir, { recursive: true })
+    const manifest = await this.readLocalManifest()
+    await writeFile(join(dir, 'manifest.json'), JSON.stringify({ ...(manifest || {}), ...patch }, null, 2))
+  }
+
   private shouldReplaceWithBundledSeed(files: string[], count: number, manifest: any) {
     if (this.language !== bundledStorySeedLanguage) return false
     if (files.includes('bundle.json')) return false
+    // 清单里留着远端合集 sha256 = 数据来自每日更新的 bundle，绝不用随包种子回盖
+    if (manifest?.storyBundleSha256) return false
     if (manifest?.bundledStorySeedVersion !== bundledStorySeedVersion) return true
     return count < bundledStorySeedCount
   }
@@ -232,22 +362,38 @@ export class WarfarinStorySearchService {
   private anchorsDir() {
     return join(this.root, this.language, 'anchors')
   }
+
+  private storePath() {
+    return join(this.anchorsDir(), STORE_FILE)
+  }
+
+  private displaySource(index: number) {
+    return displayStorySource({ scope: this.scopes[index], content: this.contents[index], source: this.sources[index] })
+  }
 }
 
-function scoreStoryAnchor(anchor: StoryAnchor, needle: string) {
-  const source = anchor.source.toLowerCase()
-  const content = anchor.content.toLowerCase()
-  if (source.includes(needle)) return 100
-  if (content.includes(needle)) return 50
-  return 0
-}
+type StorySourceParts = Pick<StoryAnchor, 'scope' | 'content' | 'source'>
 
 // 蓝图条目（"放置此蓝图后，输入…自动生产…"）与物品本体同名同标签，展示层区分为"生产蓝图"。
-function displayStorySource(anchor: StoryAnchor) {
+function displayStorySource(anchor: StorySourceParts) {
   if (anchor.scope === 'items' && /放置此蓝图后/.test(anchor.content || '')) {
     return anchor.source.replace(/^物品信息：/, '生产蓝图：')
   }
   return anchor.source
+}
+
+function lowerOrNull(value: string) {
+  const lowered = value.toLowerCase()
+  return lowered === value ? null : lowered
+}
+
+function parseStoreLine(line: string): StoryAnchor | null {
+  try {
+    const anchor = JSON.parse(line)
+    return isStoryAnchor(anchor) ? anchor : null
+  } catch {
+    return null
+  }
 }
 
 function isStoryAnchor(value: any): value is StoryAnchor {
@@ -260,7 +406,7 @@ function normalizeLanguage(language: unknown) {
 }
 
 function normalizeKeyword(keyword: string) {
-  return String(keyword || '').trim().replace(/\s+/g, ' ')
+  return stripZeroWidth(String(keyword || '')).trim().replace(/\s+/g, ' ')
 }
 
 function excerptAroundKeyword(text: string, keyword: string, maxLength: number) {

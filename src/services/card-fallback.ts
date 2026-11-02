@@ -1,6 +1,6 @@
 // 日报生成失败时的回退卡片：一张「信使把报纸弄丢了」的插画 + 写在牌子上的一句致歉。
 // 牌子（深色对话框）的位置按插画宽高比例给出，换图时只改 SIGN 常量；
-// 致歉理由三选一（disaster / courier / packet），由控制台配置决定用哪一句。
+// 致歉理由三选一（disaster / courier / packet），渲染时随机抽取；测试可注入 random 固定结果。
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -16,19 +16,21 @@ const SIGN_FONT_RATIO = 0.185
 
 export interface FallbackReason {
   id: string
-  /** 控制台里显示的理由本身 */
-  label: string
-  /** 写到牌子上的整句话；cardName 是当前卡片风格名，如「泰拉周刊」 */
-  sentence: (cardName: string) => string
+  /** 写到牌子上的整句话；cardName 是卡片名（如「泰拉周刊」/「热点周报」），when 是时间词（默认「今日」，周报用「本周」） */
+  sentence: (cardName: string, when?: string) => string
 }
 
 export const FALLBACK_REASONS: Record<string, FallbackReason> = {
-  disaster: { id: 'disaster', label: '遇到了天灾', sentence: (card) => `很抱歉博士！今日的「${card}」遇到了天灾。` },
-  courier: { id: 'courier', label: '被见习信使弄丢了', sentence: (card) => `很抱歉博士！今日的「${card}」被见习信使弄丢了。` },
-  packet: { id: 'packet', label: '城际网络丢包了', sentence: (card) => `很抱歉博士！今日的「${card}」城际网络丢包了。` },
+  disaster: { id: 'disaster', sentence: (card, when = '今日') => `很抱歉博士！${when}的「${card}」遇到了天灾。` },
+  courier: { id: 'courier', sentence: (card, when = '今日') => `很抱歉博士！${when}的「${card}」被见习信使弄丢了。` },
+  packet: { id: 'packet', sentence: (card, when = '今日') => `很抱歉博士！${when}的「${card}」城际网络丢包了。` },
 }
 
-export const DEFAULT_FALLBACK_REASON = 'disaster'
+/** 从理由池随机抽一条；测试注入 () => 0.5 之类固定值 */
+export function pickFallbackReason(random: () => number = Math.random): FallbackReason {
+  const pool = Object.values(FALLBACK_REASONS)
+  return pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))]
+}
 
 /** 回退插画本体：连浏览器都起不来时直接发它，牌子留空也好过什么都不发 */
 export async function readFallbackImage(): Promise<Buffer> {
@@ -66,6 +68,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
   letter-spacing: 0.02em;
   text-align: center;
   word-break: break-all;
+  white-space: pre-line;
 }
 `
 

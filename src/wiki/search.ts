@@ -94,7 +94,7 @@ export class WikiSearchOrchestrator {
   }
 
   async fetchContext(anchor: SelectedWikiAnchor, source: WikiSearchSource) {
-    if (source === 'story') return this.fetchStoryContext(anchor.anchor_id)
+    if (source === 'story') return this.fetchStoryContext(anchor)
     return this.fetchOfficialContext(anchor)
   }
 
@@ -130,13 +130,14 @@ export class WikiSearchOrchestrator {
     return result
   }
 
-  private async fetchStoryContext(anchorId: string) {
+  private async fetchStoryContext(anchor: SelectedWikiAnchor) {
     if (this.deps.wiki.storySearchEnabled) {
       try {
-        return await this.deps.storySearch.context({ anchorId })
+        // anchor_id 跨 scope 可重复（items/gear），带上 scope 才能取到正确那行
+        return await this.deps.storySearch.context({ anchorId: anchor.anchor_id, scope: anchor.scope })
       } catch {}
     }
-    return this.deps.storyClient.context({ anchorId, needSummary: false, contextRange: 3 })
+    return this.deps.storyClient.context({ anchorId: anchor.anchor_id, needSummary: false, contextRange: 3 })
   }
 
   async storyDataUpdatedLabel() {

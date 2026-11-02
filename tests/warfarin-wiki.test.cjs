@@ -219,7 +219,7 @@ test('formats search results and context for chat reading', () => {
     took_ms: 8,
   })
 
-  assert.match(searchText, /Warfarin Wiki 检索：息壤 \| 共 33 条，可用页码 \[1-7\] \| 输入 w 序号 查看，w\+ 下一页，w- 上一页，w\+页码 跳页。/)
+  assert.match(searchText, /Warfarin Wiki 检索：息壤 \| 共 33 条，可用页码 \[1-7\] \| 输入 w 序号 查看，w\+ 下一页，w- 上一页，w\+页码 跳页，建议追加关键词缩小范围。/)
   assert.match(searchText, /1\. 剧情-序章/)
   assert.doesNotMatch(searchText, /显示 1-5 条/)
   assert.doesNotMatch(searchText, /w 1 查看/)
@@ -336,30 +336,54 @@ test('wiki orchestrator expands official snippets with the full detail narrative
   assert.equal(calls.length, 1, 'detail responses should be cached')
 })
 
-test('chatluna tool adapter exposes search and context tools', async () => {
+test('chatluna tool adapter exposes two-stage search/read tools with clipped text', async () => {
   const { createWarfarinWikiTools } = loadChatLunaTools()
   const calls = []
-  const client = {
-    async search(input) {
-      calls.push(['search', input])
-      return { results: [], total: 0, took_ms: 1 }
+  const longBody = '正文段落。'.repeat(400)
+  const tools = createWarfarinWikiTools({
+    search: async (keyword) => {
+      calls.push(['search', keyword])
+      return {
+        results: Array.from({ length: 8 }, (_, index) => ({
+          anchor_id: `a_${index}`,
+          scope: 'items',
+          source: `物品信息：条目${index}`,
+          content: `前缀${keyword}后缀${index}`,
+          relevance: 1,
+        })),
+        total: 8,
+        took_ms: 1,
+      }
     },
-    async context(input) {
-      calls.push(['context', input])
-      return { anchor: { anchor_id: 'a', content: 'c', source: 's', scope: 'plot', relevance: 1 }, full_text: [], summary: null, source_ref: 's' }
+    context: async (anchorId, scope) => {
+      calls.push(['context', anchorId, scope])
+      return {
+        anchor: { anchor_id: anchorId, content: longBody, source: '物品信息：息壤', scope: 'items', relevance: 1, url: 'https://warfarin.wiki/cn/items/a' },
+        full_text: [{ speaker: '资料', text: longBody }],
+        summary: null,
+        source_ref: '物品信息：息壤',
+      }
     },
-  }
+    topK: 5,
+    excerptChars: 60,
+    contextChars: 800,
+  })
 
-  const tools = createWarfarinWikiTools(client)
-  assert.deepEqual(tools.map((tool) => tool.name), ['warfarin_wiki_search', 'warfarin_wiki_context'])
+  assert.deepEqual(tools.map((tool) => tool.name), ['warfarin_wiki_search', 'warfarin_wiki_read'])
+  assert.match(tools[1].description, /不得原样转发到群/)
 
-  await tools[0].execute({ keyword: '息壤', scope: ['plot'], limit: 3 })
-  await tools[1].execute({ anchor_id: 'plot_001', need_summary: false, context_range: 0 })
+  const hits = await tools[0].execute({ keyword: '息壤' })
+  assert.equal(hits.length, 5)
+  assert.deepEqual(Object.keys(hits[0]), ['anchor_id', 'scope', 'source', 'excerpt'])
+  assert.equal(hits[0].anchor_id, 'a_0')
+  assert.equal(hits[0].excerpt, '前缀息壤后缀0')
 
-  assert.deepEqual(calls, [
-    ['search', { keyword: '息壤' }],
-    ['context', { anchorId: 'plot_001', needSummary: false, contextRange: 0 }],
-  ])
+  const detail = await tools[1].execute({ anchor_id: 'item_1', scope: 'gear' })
+  assert.deepEqual(calls, [['search', '息壤'], ['context', 'item_1', 'gear']])
+  assert.equal(detail.anchor_id, 'item_1')
+  assert.equal(detail.truncated, true)
+  assert.ok(detail.text.length < longBody.length + 200)
+  assert.equal(detail.url, 'https://warfarin.wiki/cn/items/a')
 })
 
 function jsonResponse(payload) {
