@@ -99,7 +99,8 @@ async function fetchText(url) {
       headers: { 'User-Agent': browserUserAgent, Accept: 'text/html,application/json,*/*', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
     })
     if (!response.ok) throw new Error(`GET ${url} failed with HTTP ${response.status}`)
-    return response.text()
+    // 必须 await 才能让 body 读失败落进上面的 try/超时窗口（`return response.text()` 会绕过）。
+    return await response.text()
   } finally {
     clearTimeout(timer)
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-parsers.js'
@@ -14,11 +14,14 @@ const parserVersion = 7
 const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
 const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)
+const fetchRetries = Math.max(0, Number(process.env.STORY_UPDATE_RETRIES ?? 2))
+const fetchRetryDelayMs = Math.max(0, Number(process.env.STORY_UPDATE_RETRY_DELAY_MS ?? 1000))
 const progressEvery = Math.max(1, Number(process.env.STORY_PROGRESS_EVERY || 25))
 const progressIntervalMs = Math.max(1000, Number(process.env.STORY_PROGRESS_INTERVAL_MS || 15000))
 const sourceUpdateDelayHours = Math.max(0, Number(process.env.STORY_SOURCE_UPDATE_DELAY_HOURS || 0))
 const nowMs = process.env.STORY_NOW ? Date.parse(process.env.STORY_NOW) : Date.now()
 const outDir = resolve(process.argv[2] || 'artifacts/warfarin-story')
+const previousArtifactsDir = joinPath(outDir, 'previous')
 const filename = `warfarin-story-${language}.json.gz`
 const manifestName = `warfarin-story-${language}.manifest.json`
 const bundleUrl = `https://github.com/${repository}/releases/download/${releaseTag}/${filename}`
@@ -34,10 +37,8 @@ const startedAt = Date.now()
 log(`Warfarin story bundle start: language=${language} categories=${categories.join(',')} concurrency=${concurrency} rateLimitMs=${rateLimitMs} timeoutMs=${timeoutMs}`)
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
-const previousManifest = await fetchJson(manifestUrl).catch((error) => {
-  log(`Warfarin story bundle previous manifest unavailable: ${error instanceof Error ? error.message : String(error)}`)
-  return null
-})
+const previousSource = await loadPreviousManifest()
+const previousManifest = previousSource?.manifest || null
 if (shouldDelaySourceUpdate(previousManifest)) {
   await mkdir(outDir, { recursive: true })
   await discardPublishedArtifacts()
@@ -46,7 +47,7 @@ if (shouldDelaySourceUpdate(previousManifest)) {
   console.log(JSON.stringify({ skipped: true, delayed: true, sourceUpdatedAt }, null, 2))
   process.exit(0)
 }
-const previousBundle = shouldReusePreviousBundle(previousManifest) ? await fetchPreviousBundle(previousManifest).catch(() => []) : []
+const previousBundle = shouldReusePreviousBundle(previousManifest) ? await fetchPreviousBundle(previousManifest, previousSource?.dir).catch(() => []) : []
 const previousByKey = groupPreviousAnchors(previousBundle)
 // 增量模式：上一版包可用、解析器版本不落后、首页日期没变，且没有被强制全量。
 // 详情接口没有 ETag/Last-Modified，所以「逐条变更」只能靠列表集合差来逼近：
@@ -56,7 +57,8 @@ const incremental = !forcedFullUpdate
   && Number(previousManifest?.parserVersion || 0) >= parserVersion
   && previousManifest?.sourceUpdatedAt === sourceUpdatedAt
   && previousBundle.length > 0
-log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size} mode=${incremental ? 'incremental' : 'full'}`)
+const incrementalReason = incremental ? '' : fullCrawlReason({ forcedFullUpdate, previousManifest, previousBundle, sourceUpdatedAt })
+log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size} mode=${incremental ? 'incremental' : 'full'}${incrementalReason ? ` reason=${incrementalReason}` : ''}`)
 if (shouldPublishBundledSeed(previousManifest)) {
   const seedAnchors = loadBundledStorySeed().filter(isBundleAnchor)
   if (!seedAnchors.length) throw new Error('bundled story seed has no usable anchors')
@@ -99,11 +101,13 @@ for (const category of categories) {
   if (!slugs.length) emptyCategories.push(category)
   log(`Warfarin story bundle category start: ${category} slugs=${slugs.length} mode=${incremental ? 'incremental' : 'full'}`)
   const categoryStats = { done: 0, failed: 0, skipped: 0, refreshed: 0, reused: 0, reusedEntries: 0, newEntries: 0, lastLogAt: Date.now() }
-  const results = await mapWithConcurrency(slugs, concurrency, async (slug) => {
+  const results = await mapWithConcurrency(slugs, concurrency, async (slug, _index, pace) => {
     const sourceKey = `${scope}/${slug}`
     const previous = reusePreviousEntry(incremental, sourceKey, previousByKey)
     if (previous) return { reused: true, skipped: true, anchors: previous.anchors }
     try {
+      // 限速只落在真正发出去的详情请求上：增量轮命中的条目直接复用，不该在这里空睡。
+      await pace()
       const data = await fetchDetail(language, category, slug)
       const rawSha256 = hashJson(data)
       const previousDetail = previousByKey.get(sourceKey)
@@ -214,11 +218,61 @@ async function fetchDetail(lang, category, slug) {
   return payload?.data || payload
 }
 
-async function fetchPreviousBundle(manifest) {
+// 全量重爬是 30 分钟量级的兜底，不该因为一次 manifest 请求失败就触发：
+// 远端拿不到就退回自托管 runner 上留存的上一轮产物（sha256 校验过）。
+async function loadPreviousManifest() {
+  try {
+    return { manifest: await fetchJson(manifestUrl), dir: '' }
+  } catch (error) {
+    log(`Warfarin story bundle previous manifest unavailable: ${describeError(error)}`)
+  }
+  for (const dir of [outDir, previousArtifactsDir]) {
+    const manifest = await readJsonFile(joinPath(dir, manifestName))
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) continue
+    log(`Warfarin story bundle previous manifest from local artifacts (${dir}): count=${Number(manifest.count || 0)} parserVersion=${Number(manifest.parserVersion || 0)} sourceUpdatedAt=${manifest.sourceUpdatedAt || ''}`)
+    return { manifest, dir }
+  }
+  log('Warfarin story bundle previous manifest not in local artifacts either')
+  return null
+}
+
+async function readJsonFile(path) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function fetchPreviousBundle(manifest, localDir) {
   const url = String(manifest?.url || '').trim()
-  if (!url) return []
-  const compressed = await readBuffer(await fetchWithTimeout(url))
-  if (manifest?.sha256 && createHash('sha256').update(compressed).digest('hex') !== manifest.sha256) return []
+  if (url) {
+    try {
+      const anchors = parsePreviousBundle(await fetchWithRetry(url, readBuffer), manifest)
+      // sha 对不上说明远端资产不是这份 manifest 的那一版（Release 被覆盖 / 下载被截断），
+      // 这时本地产物反而更可信，交给下面的本地分支再判一次。
+      if (anchors.length) return anchors
+    } catch (error) {
+      log(`Warfarin story bundle previous bundle download failed: ${describeError(error)}`)
+    }
+  }
+  for (const dir of new Set([localDir, outDir, previousArtifactsDir].filter(Boolean))) {
+    const compressed = await readFile(joinPath(dir, filename)).catch(() => null)
+    if (!compressed) continue
+    const anchors = parsePreviousBundle(compressed, manifest)
+    if (!anchors.length) continue
+    log(`Warfarin story bundle previous bundle from local artifacts (${dir}): anchors=${anchors.length}`)
+    return anchors
+  }
+  return []
+}
+
+function parsePreviousBundle(compressed, manifest) {
+  const sha256 = createHash('sha256').update(compressed).digest('hex')
+  if (manifest?.sha256 && sha256 !== manifest.sha256) {
+    log(`Warfarin story bundle previous bundle ignored: sha256 ${sha256} != manifest ${manifest.sha256}`)
+    return []
+  }
   const payload = JSON.parse(gunzipSync(compressed).toString('utf8'))
   return Array.isArray(payload) ? payload : Array.isArray(payload?.anchors) ? payload.anchors : []
 }
@@ -297,6 +351,16 @@ function shouldReusePreviousBundle(manifest) {
   return Number(manifest?.parserVersion || 0) >= parserVersion
 }
 
+// 让日志直接说清「为什么这一轮要全量爬」，全量是最后兜底而不是默认路径。
+function fullCrawlReason({ forcedFullUpdate, previousManifest, previousBundle, sourceUpdatedAt }) {
+  if (forcedFullUpdate) return 'forced'
+  if (!previousManifest) return 'no-previous-manifest'
+  if (Number(previousManifest?.parserVersion || 0) < parserVersion) return 'parser-version'
+  if (previousManifest?.sourceUpdatedAt !== sourceUpdatedAt) return `source-date ${previousManifest?.sourceUpdatedAt || 'none'}→${sourceUpdatedAt}`
+  if (!previousBundle.length) return 'no-reusable-entries'
+  return 'unknown'
+}
+
 // 增量模式下命中上一版同 key 条目时直接复用其锚点，不为它发详情请求。
 function reusePreviousEntry(incremental, sourceKey, previousByKey) {
   if (!incremental) return null
@@ -305,12 +369,22 @@ function reusePreviousEntry(incremental, sourceKey, previousByKey) {
 }
 
 // 自托管 runner 的 artifacts/ 跨次留存：写 skipped.json 时上一轮的包可能还在，
-// workflow 的「没有 gz 就不上传」判断就会把旧包当新资产发出去。跳过发布前必须清掉。
+// workflow 靠「outDir 里有没有 gz」判断要不要上传，所以跳过发布时旧包必须离开 outDir；
+// 但它同时是下一轮 manifest 不可用时的唯一兜底，因此只挪到 previous/ 而不删。
 async function discardPublishedArtifacts() {
-  await Promise.all([
-    rm(joinPath(outDir, filename), { force: true }),
-    rm(joinPath(outDir, manifestName), { force: true }),
-  ])
+  await mkdir(previousArtifactsDir, { recursive: true })
+  for (const name of [filename, manifestName]) {
+    const source = joinPath(outDir, name)
+    const target = joinPath(previousArtifactsDir, name)
+    // 上一轮跳过时包已经在 previous/ 里，这一轮没有新包可挪——别把仅有的兜底删了。
+    if (!await exists(source)) continue
+    await rm(target, { force: true })
+    await rename(source, target).catch(() => {})
+  }
+}
+
+async function exists(path) {
+  return access(path).then(() => true, () => false)
 }
 
 async function writeBundle(anchors, sourceReport) {
@@ -343,16 +417,20 @@ function isBundleAnchor(anchor) {
 async function mapWithConcurrency(items, limit, worker, spacingMs, onResult) {
   const results = new Array(items.length)
   let next = 0
-  let lastStart = 0
   async function run() {
-    while (next < items.length) {
-      const index = next++
+    let lastStart = 0
+    // 每个 worker 各自节流，只有真正要发请求时才调用 pace()：增量轮里命中复用的条目
+    // 原来也要按条目睡满 spacingMs（5367 条空转轮白烧 612s），现在直接放行。
+    const pace = async () => {
       if (spacingMs && lastStart) {
         const wait = Math.max(0, spacingMs - (Date.now() - lastStart))
         if (wait) await sleep(wait)
       }
       lastStart = Date.now()
-      results[index] = await worker(items[index], index)
+    }
+    while (next < items.length) {
+      const index = next++
+      results[index] = await worker(items[index], index, pace)
       onResult?.(results[index], index, items[index])
     }
   }
@@ -371,12 +449,13 @@ async function fetchJson(url) {
     return fetchJsonWithChrome(url)
   }
   try {
-    const response = await fetchWithTimeout(url)
-    return response.json()
+    // 必须 await：try/catch 只能拦住 await 过的拒绝，`return response.json()` 会把 body 读失败
+    // 直接漏到调用方（这里是整轮任务），chrome 兜底和重试都轮不到。
+    return await fetchWithRetry(url, response => response.json())
   } catch (error) {
     if (process.env.STORY_API_FETCHER !== 'fetch' && isWarfarinApi) {
-      log(`Warfarin story bundle chrome fallback: ${url} reason=${error instanceof Error ? error.message : String(error)}`)
-      return fetchJsonWithChrome(url)
+      log(`Warfarin story bundle chrome fallback: ${url} reason=${describeError(error)}`)
+      return await fetchJsonWithChrome(url)
     }
     throw error
   }
@@ -391,8 +470,40 @@ async function fetchText(url) {
   if (process.env.STORY_HTML_FETCHER !== 'fetch' && String(url).startsWith('https://warfarin.wiki/')) {
     return fetchTextWithChrome(url)
   }
-  const response = await fetchWithTimeout(url)
-  return response.text()
+  return fetchWithRetry(url, response => response.text())
+}
+
+// 抓取失败多半只是代理把连接掐了（undici 报 terminated / other side closed / UND_ERR_SOCKET）。
+// 重试比立刻起一个 headless Chrome 便宜得多，也不会让整轮定时任务因为一次抖动直接失败。
+async function fetchWithRetry(url, read) {
+  let lastError
+  for (let attempt = 0; attempt <= fetchRetries; attempt++) {
+    if (attempt) {
+      log(`Warfarin story bundle retry ${attempt}/${fetchRetries}: ${url} reason=${describeError(lastError)}`)
+      await sleep(fetchRetryDelayMs * attempt)
+    }
+    try {
+      return await fetchWithTimeout(url, read)
+    } catch (error) {
+      lastError = error
+      if (!isTransientFetchError(error)) break
+    }
+  }
+  throw lastError
+}
+
+function isTransientFetchError(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return true
+  const text = `${error?.message || ''} ${error?.cause?.code || ''} ${error?.cause?.message || ''}`
+  if (/HTTP 5\d\d/.test(text)) return true
+  return /terminated|other side closed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|UND_ERR|fetch failed|socket/i.test(text)
+}
+
+function describeError(error) {
+  if (!(error instanceof Error)) return String(error)
+  const cause = error.cause
+  const causeText = cause ? ` [${cause.code || cause.name || 'cause'}: ${cause.message || ''}]` : ''
+  return `${error.message}${causeText}`
 }
 
 async function fetchTextWithChrome(url) {
@@ -469,16 +580,30 @@ function decodeHtml(input) {
     .replace(/&amp;/g, '&')
 }
 
-async function fetchWithTimeout(url) {
+async function fetchWithTimeout(url, read = response => response) {
   if (process.env.STORY_GITHUB_FETCHER === 'curl' && isGitHubReleaseDownload(url)) {
-    return fetchWithCurl(url)
+    let downloaded
+    try {
+      downloaded = await fetchWithCurl(url)
+    } catch (error) {
+      // 服务器上 curl 常被 mihomo 卡到 30s 空收（curl: (28) … 0 bytes received），
+      // 而 manifest 拿不到就等于退化成半小时全量重爬，所以这里再给 undici 一次机会。
+      log(`Warfarin story bundle curl fallback: ${url} reason=${describeError(error)}`)
+    }
+    if (downloaded) return await read(downloaded)
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(url, { signal: controller.signal, headers: requestHeaders(url) })
-    if (!response.ok) throw new Error(`GET ${url} failed with HTTP ${response.status}`)
-    return response
+    if (!response.ok) {
+      // 非 2xx 的 body 也要放掉：留一个没人读的流，代理关连接时它会在别处抛 terminated。
+      await response.body?.cancel().catch(() => {})
+      throw new Error(`GET ${url} failed with HTTP ${response.status}`)
+    }
+    // body 必须在同一个超时窗口里读完：原来的写法只等响应头就 clearTimeout，
+    // 「头到了、body 卡住」就只能等代理自己放弃连接，报错还是 undici 的 terminated。
+    return await read(response)
   } finally {
     clearTimeout(timer)
   }
