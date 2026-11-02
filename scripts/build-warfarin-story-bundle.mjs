@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-parsers.js'
@@ -21,6 +21,7 @@ const progressIntervalMs = Math.max(1000, Number(process.env.STORY_PROGRESS_INTE
 const sourceUpdateDelayHours = Math.max(0, Number(process.env.STORY_SOURCE_UPDATE_DELAY_HOURS || 0))
 const nowMs = process.env.STORY_NOW ? Date.parse(process.env.STORY_NOW) : Date.now()
 const outDir = resolve(process.argv[2] || 'artifacts/warfarin-story')
+const previousArtifactsDir = joinPath(outDir, 'previous')
 const filename = `warfarin-story-${language}.json.gz`
 const manifestName = `warfarin-story-${language}.manifest.json`
 const bundleUrl = `https://github.com/${repository}/releases/download/${releaseTag}/${filename}`
@@ -36,7 +37,8 @@ const startedAt = Date.now()
 log(`Warfarin story bundle start: language=${language} categories=${categories.join(',')} concurrency=${concurrency} rateLimitMs=${rateLimitMs} timeoutMs=${timeoutMs}`)
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
-const previousManifest = await loadPreviousManifest()
+const previousSource = await loadPreviousManifest()
+const previousManifest = previousSource?.manifest || null
 if (shouldDelaySourceUpdate(previousManifest)) {
   await mkdir(outDir, { recursive: true })
   await discardPublishedArtifacts()
@@ -45,7 +47,7 @@ if (shouldDelaySourceUpdate(previousManifest)) {
   console.log(JSON.stringify({ skipped: true, delayed: true, sourceUpdatedAt }, null, 2))
   process.exit(0)
 }
-const previousBundle = shouldReusePreviousBundle(previousManifest) ? await fetchPreviousBundle(previousManifest).catch(() => []) : []
+const previousBundle = shouldReusePreviousBundle(previousManifest) ? await fetchPreviousBundle(previousManifest, previousSource?.dir).catch(() => []) : []
 const previousByKey = groupPreviousAnchors(previousBundle)
 // 增量模式：上一版包可用、解析器版本不落后、首页日期没变，且没有被强制全量。
 // 详情接口没有 ETag/Last-Modified，所以「逐条变更」只能靠列表集合差来逼近：
@@ -218,29 +220,29 @@ async function fetchDetail(lang, category, slug) {
 // 远端拿不到就退回自托管 runner 上留存的上一轮产物（sha256 校验过）。
 async function loadPreviousManifest() {
   try {
-    return await fetchJson(manifestUrl)
+    return { manifest: await fetchJson(manifestUrl), dir: '' }
   } catch (error) {
     log(`Warfarin story bundle previous manifest unavailable: ${describeError(error)}`)
   }
-  const local = await readLocalManifest()
-  if (!local) {
-    log('Warfarin story bundle previous manifest not in local artifacts either')
-    return null
+  for (const dir of [outDir, previousArtifactsDir]) {
+    const manifest = await readJsonFile(joinPath(dir, manifestName))
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) continue
+    log(`Warfarin story bundle previous manifest from local artifacts (${dir}): count=${Number(manifest.count || 0)} parserVersion=${Number(manifest.parserVersion || 0)} sourceUpdatedAt=${manifest.sourceUpdatedAt || ''}`)
+    return { manifest, dir }
   }
-  log(`Warfarin story bundle previous manifest from local artifacts: count=${Number(local.count || 0)} parserVersion=${Number(local.parserVersion || 0)} sourceUpdatedAt=${local.sourceUpdatedAt || ''}`)
-  return local
+  log('Warfarin story bundle previous manifest not in local artifacts either')
+  return null
 }
 
-async function readLocalManifest() {
+async function readJsonFile(path) {
   try {
-    const manifest = JSON.parse(await readFile(joinPath(outDir, manifestName), 'utf8'))
-    return manifest && typeof manifest === 'object' && !Array.isArray(manifest) ? manifest : null
+    return JSON.parse(await readFile(path, 'utf8'))
   } catch {
     return null
   }
 }
 
-async function fetchPreviousBundle(manifest) {
+async function fetchPreviousBundle(manifest, localDir) {
   const url = String(manifest?.url || '').trim()
   if (url) {
     try {
@@ -252,17 +254,15 @@ async function fetchPreviousBundle(manifest) {
       log(`Warfarin story bundle previous bundle download failed: ${describeError(error)}`)
     }
   }
-  const local = await readLocalBundle(manifest)
-  if (local.length) log(`Warfarin story bundle previous bundle from local artifacts: anchors=${local.length}`)
-  return local
-}
-
-async function readLocalBundle(manifest) {
-  try {
-    return parsePreviousBundle(await readFile(joinPath(outDir, filename)), manifest)
-  } catch {
-    return []
+  for (const dir of new Set([localDir, outDir, previousArtifactsDir].filter(Boolean))) {
+    const compressed = await readFile(joinPath(dir, filename)).catch(() => null)
+    if (!compressed) continue
+    const anchors = parsePreviousBundle(compressed, manifest)
+    if (!anchors.length) continue
+    log(`Warfarin story bundle previous bundle from local artifacts (${dir}): anchors=${anchors.length}`)
+    return anchors
   }
+  return []
 }
 
 function parsePreviousBundle(compressed, manifest) {
@@ -367,12 +367,22 @@ function reusePreviousEntry(incremental, sourceKey, previousByKey) {
 }
 
 // 自托管 runner 的 artifacts/ 跨次留存：写 skipped.json 时上一轮的包可能还在，
-// workflow 的「没有 gz 就不上传」判断就会把旧包当新资产发出去。跳过发布前必须清掉。
+// workflow 靠「outDir 里有没有 gz」判断要不要上传，所以跳过发布时旧包必须离开 outDir；
+// 但它同时是下一轮 manifest 不可用时的唯一兜底，因此只挪到 previous/ 而不删。
 async function discardPublishedArtifacts() {
-  await Promise.all([
-    rm(joinPath(outDir, filename), { force: true }),
-    rm(joinPath(outDir, manifestName), { force: true }),
-  ])
+  await mkdir(previousArtifactsDir, { recursive: true })
+  for (const name of [filename, manifestName]) {
+    const source = joinPath(outDir, name)
+    const target = joinPath(previousArtifactsDir, name)
+    // 上一轮跳过时包已经在 previous/ 里，这一轮没有新包可挪——别把仅有的兜底删了。
+    if (!await exists(source)) continue
+    await rm(target, { force: true })
+    await rename(source, target).catch(() => {})
+  }
+}
+
+async function exists(path) {
+  return access(path).then(() => true, () => false)
 }
 
 async function writeBundle(anchors, sourceReport) {
