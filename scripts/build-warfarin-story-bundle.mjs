@@ -14,6 +14,8 @@ const parserVersion = 7
 const rateLimitMs = Number(process.env.STORY_UPDATE_RATE_LIMIT_MS || 150)
 const concurrency = Math.max(1, Number(process.env.STORY_UPDATE_CONCURRENCY || 4))
 const timeoutMs = Number(process.env.STORY_UPDATE_TIMEOUT_MS || 30000)
+const fetchRetries = Math.max(0, Number(process.env.STORY_UPDATE_RETRIES ?? 2))
+const fetchRetryDelayMs = Math.max(0, Number(process.env.STORY_UPDATE_RETRY_DELAY_MS ?? 1000))
 const progressEvery = Math.max(1, Number(process.env.STORY_PROGRESS_EVERY || 25))
 const progressIntervalMs = Math.max(1000, Number(process.env.STORY_PROGRESS_INTERVAL_MS || 15000))
 const sourceUpdateDelayHours = Math.max(0, Number(process.env.STORY_SOURCE_UPDATE_DELAY_HOURS || 0))
@@ -217,7 +219,7 @@ async function fetchDetail(lang, category, slug) {
 async function fetchPreviousBundle(manifest) {
   const url = String(manifest?.url || '').trim()
   if (!url) return []
-  const compressed = await readBuffer(await fetchWithTimeout(url))
+  const compressed = await fetchWithRetry(url, readBuffer)
   if (manifest?.sha256 && createHash('sha256').update(compressed).digest('hex') !== manifest.sha256) return []
   const payload = JSON.parse(gunzipSync(compressed).toString('utf8'))
   return Array.isArray(payload) ? payload : Array.isArray(payload?.anchors) ? payload.anchors : []
@@ -371,12 +373,13 @@ async function fetchJson(url) {
     return fetchJsonWithChrome(url)
   }
   try {
-    const response = await fetchWithTimeout(url)
-    return response.json()
+    // 必须 await：try/catch 只能拦住 await 过的拒绝，`return response.json()` 会把 body 读失败
+    // 直接漏到调用方（这里是整轮任务），chrome 兜底和重试都轮不到。
+    return await fetchWithRetry(url, response => response.json())
   } catch (error) {
     if (process.env.STORY_API_FETCHER !== 'fetch' && isWarfarinApi) {
-      log(`Warfarin story bundle chrome fallback: ${url} reason=${error instanceof Error ? error.message : String(error)}`)
-      return fetchJsonWithChrome(url)
+      log(`Warfarin story bundle chrome fallback: ${url} reason=${describeError(error)}`)
+      return await fetchJsonWithChrome(url)
     }
     throw error
   }
@@ -391,8 +394,40 @@ async function fetchText(url) {
   if (process.env.STORY_HTML_FETCHER !== 'fetch' && String(url).startsWith('https://warfarin.wiki/')) {
     return fetchTextWithChrome(url)
   }
-  const response = await fetchWithTimeout(url)
-  return response.text()
+  return fetchWithRetry(url, response => response.text())
+}
+
+// 抓取失败多半只是代理把连接掐了（undici 报 terminated / other side closed / UND_ERR_SOCKET）。
+// 重试比立刻起一个 headless Chrome 便宜得多，也不会让整轮定时任务因为一次抖动直接失败。
+async function fetchWithRetry(url, read) {
+  let lastError
+  for (let attempt = 0; attempt <= fetchRetries; attempt++) {
+    if (attempt) {
+      log(`Warfarin story bundle retry ${attempt}/${fetchRetries}: ${url} reason=${describeError(lastError)}`)
+      await sleep(fetchRetryDelayMs * attempt)
+    }
+    try {
+      return await fetchWithTimeout(url, read)
+    } catch (error) {
+      lastError = error
+      if (!isTransientFetchError(error)) break
+    }
+  }
+  throw lastError
+}
+
+function isTransientFetchError(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return true
+  const text = `${error?.message || ''} ${error?.cause?.code || ''} ${error?.cause?.message || ''}`
+  if (/HTTP 5\d\d/.test(text)) return true
+  return /terminated|other side closed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|UND_ERR|fetch failed|socket/i.test(text)
+}
+
+function describeError(error) {
+  if (!(error instanceof Error)) return String(error)
+  const cause = error.cause
+  const causeText = cause ? ` [${cause.code || cause.name || 'cause'}: ${cause.message || ''}]` : ''
+  return `${error.message}${causeText}`
 }
 
 async function fetchTextWithChrome(url) {
@@ -469,16 +504,22 @@ function decodeHtml(input) {
     .replace(/&amp;/g, '&')
 }
 
-async function fetchWithTimeout(url) {
+async function fetchWithTimeout(url, read = response => response) {
   if (process.env.STORY_GITHUB_FETCHER === 'curl' && isGitHubReleaseDownload(url)) {
-    return fetchWithCurl(url)
+    return read(await fetchWithCurl(url))
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(url, { signal: controller.signal, headers: requestHeaders(url) })
-    if (!response.ok) throw new Error(`GET ${url} failed with HTTP ${response.status}`)
-    return response
+    if (!response.ok) {
+      // 非 2xx 的 body 也要放掉：留一个没人读的流，代理关连接时它会在别处抛 terminated。
+      await response.body?.cancel().catch(() => {})
+      throw new Error(`GET ${url} failed with HTTP ${response.status}`)
+    }
+    // body 必须在同一个超时窗口里读完：原来的写法只等响应头就 clearTimeout，
+    // 「头到了、body 卡住」就只能等代理自己放弃连接，报错还是 undici 的 terminated。
+    return await read(response)
   } finally {
     clearTimeout(timer)
   }
