@@ -206,7 +206,9 @@ export function createAlbumHub(deps: AlbumHubDeps) {
               const albums = await delivery.listAlbums(groupId)
               const found = albums.find((album) => album.albumId === albumId)
               if (found?.albumName) albumNames.set(`${groupId}/${albumId}`, found.albumName)
-            } catch { /* 名称只是展示用 */ }
+            } catch (error) {
+              logger.debug(`相册名查询失败（仅影响提示文案）：${formatError(error)}`)
+            }
           }
           for (const image of images) {
             const outcome = await deliver({
