@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { createWarfarinAnchorsFromDetail } from '../lib/services/warfarin-story-parsers.js'
@@ -36,10 +36,7 @@ const startedAt = Date.now()
 log(`Warfarin story bundle start: language=${language} categories=${categories.join(',')} concurrency=${concurrency} rateLimitMs=${rateLimitMs} timeoutMs=${timeoutMs}`)
 const sourceUpdatedAt = await fetchSourceUpdatedAt(language)
 log(`Warfarin story bundle source date: ${sourceUpdatedAt}`)
-const previousManifest = await fetchJson(manifestUrl).catch((error) => {
-  log(`Warfarin story bundle previous manifest unavailable: ${error instanceof Error ? error.message : String(error)}`)
-  return null
-})
+const previousManifest = await loadPreviousManifest()
 if (shouldDelaySourceUpdate(previousManifest)) {
   await mkdir(outDir, { recursive: true })
   await discardPublishedArtifacts()
@@ -58,7 +55,8 @@ const incremental = !forcedFullUpdate
   && Number(previousManifest?.parserVersion || 0) >= parserVersion
   && previousManifest?.sourceUpdatedAt === sourceUpdatedAt
   && previousBundle.length > 0
-log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size} mode=${incremental ? 'incremental' : 'full'}`)
+const incrementalReason = incremental ? '' : fullCrawlReason({ forcedFullUpdate, previousManifest, previousBundle, sourceUpdatedAt })
+log(`Warfarin story bundle previous: manifest=${previousManifest?.sha256 ? 'yes' : 'no'} anchors=${previousBundle.length} reusableEntries=${previousByKey.size} mode=${incremental ? 'incremental' : 'full'}${incrementalReason ? ` reason=${incrementalReason}` : ''}`)
 if (shouldPublishBundledSeed(previousManifest)) {
   const seedAnchors = loadBundledStorySeed().filter(isBundleAnchor)
   if (!seedAnchors.length) throw new Error('bundled story seed has no usable anchors')
@@ -216,11 +214,63 @@ async function fetchDetail(lang, category, slug) {
   return payload?.data || payload
 }
 
+// 全量重爬是 30 分钟量级的兜底，不该因为一次 manifest 请求失败就触发：
+// 远端拿不到就退回自托管 runner 上留存的上一轮产物（sha256 校验过）。
+async function loadPreviousManifest() {
+  try {
+    return await fetchJson(manifestUrl)
+  } catch (error) {
+    log(`Warfarin story bundle previous manifest unavailable: ${describeError(error)}`)
+  }
+  const local = await readLocalManifest()
+  if (!local) {
+    log('Warfarin story bundle previous manifest not in local artifacts either')
+    return null
+  }
+  log(`Warfarin story bundle previous manifest from local artifacts: count=${Number(local.count || 0)} parserVersion=${Number(local.parserVersion || 0)} sourceUpdatedAt=${local.sourceUpdatedAt || ''}`)
+  return local
+}
+
+async function readLocalManifest() {
+  try {
+    const manifest = JSON.parse(await readFile(joinPath(outDir, manifestName), 'utf8'))
+    return manifest && typeof manifest === 'object' && !Array.isArray(manifest) ? manifest : null
+  } catch {
+    return null
+  }
+}
+
 async function fetchPreviousBundle(manifest) {
   const url = String(manifest?.url || '').trim()
-  if (!url) return []
-  const compressed = await fetchWithRetry(url, readBuffer)
-  if (manifest?.sha256 && createHash('sha256').update(compressed).digest('hex') !== manifest.sha256) return []
+  if (url) {
+    try {
+      const anchors = parsePreviousBundle(await fetchWithRetry(url, readBuffer), manifest)
+      // sha 对不上说明远端资产不是这份 manifest 的那一版（Release 被覆盖 / 下载被截断），
+      // 这时本地产物反而更可信，交给下面的本地分支再判一次。
+      if (anchors.length) return anchors
+    } catch (error) {
+      log(`Warfarin story bundle previous bundle download failed: ${describeError(error)}`)
+    }
+  }
+  const local = await readLocalBundle(manifest)
+  if (local.length) log(`Warfarin story bundle previous bundle from local artifacts: anchors=${local.length}`)
+  return local
+}
+
+async function readLocalBundle(manifest) {
+  try {
+    return parsePreviousBundle(await readFile(joinPath(outDir, filename)), manifest)
+  } catch {
+    return []
+  }
+}
+
+function parsePreviousBundle(compressed, manifest) {
+  const sha256 = createHash('sha256').update(compressed).digest('hex')
+  if (manifest?.sha256 && sha256 !== manifest.sha256) {
+    log(`Warfarin story bundle previous bundle ignored: sha256 ${sha256} != manifest ${manifest.sha256}`)
+    return []
+  }
   const payload = JSON.parse(gunzipSync(compressed).toString('utf8'))
   return Array.isArray(payload) ? payload : Array.isArray(payload?.anchors) ? payload.anchors : []
 }
@@ -297,6 +347,16 @@ function shouldDelaySourceUpdate(manifest) {
 
 function shouldReusePreviousBundle(manifest) {
   return Number(manifest?.parserVersion || 0) >= parserVersion
+}
+
+// 让日志直接说清「为什么这一轮要全量爬」，全量是最后兜底而不是默认路径。
+function fullCrawlReason({ forcedFullUpdate, previousManifest, previousBundle, sourceUpdatedAt }) {
+  if (forcedFullUpdate) return 'forced'
+  if (!previousManifest) return 'no-previous-manifest'
+  if (Number(previousManifest?.parserVersion || 0) < parserVersion) return 'parser-version'
+  if (previousManifest?.sourceUpdatedAt !== sourceUpdatedAt) return `source-date ${previousManifest?.sourceUpdatedAt || 'none'}→${sourceUpdatedAt}`
+  if (!previousBundle.length) return 'no-reusable-entries'
+  return 'unknown'
 }
 
 // 增量模式下命中上一版同 key 条目时直接复用其锚点，不为它发详情请求。
@@ -506,7 +566,15 @@ function decodeHtml(input) {
 
 async function fetchWithTimeout(url, read = response => response) {
   if (process.env.STORY_GITHUB_FETCHER === 'curl' && isGitHubReleaseDownload(url)) {
-    return read(await fetchWithCurl(url))
+    let downloaded
+    try {
+      downloaded = await fetchWithCurl(url)
+    } catch (error) {
+      // 服务器上 curl 常被 mihomo 卡到 30s 空收（curl: (28) … 0 bytes received），
+      // 而 manifest 拿不到就等于退化成半小时全量重爬，所以这里再给 undici 一次机会。
+      log(`Warfarin story bundle curl fallback: ${url} reason=${describeError(error)}`)
+    }
+    if (downloaded) return await read(downloaded)
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
